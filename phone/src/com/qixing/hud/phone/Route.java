@@ -45,23 +45,30 @@ final class Route {
 
     /** Projects a point onto the route. hint < 0 searches the whole route. */
     Match project(double la, double lo, int hint) {
-        Match m = projectRange(la, lo, hint < 0 ? 0 : Math.max(0, hint - 15),
-                hint < 0 ? size() - 1 : Math.min(size() - 1, hint + 400));
-        if (hint >= 0 && m.off > 80) {
-            Match g = projectRange(la, lo, 0, size() - 1);
+        if (hint < 0) {
+            // First fix: on a round trip the start and the end are both nearby. Take the earliest
+            // part of the route that is about as close as the best match, not the end of it.
+            return projectRange(la, lo, 0, size() - 1, 15);
+        }
+        Match m = projectRange(la, lo, Math.max(0, hint - 15), Math.min(size() - 1, hint + 400), 0);
+        if (m.off > 80) {
+            Match g = projectRange(la, lo, 0, size() - 1, 0);
             if (g.off < m.off) m = g;
         }
         return m;
     }
 
-    private Match projectRange(double la, double lo, int from, int to) {
+    /** slack > 0: return the earliest segment within slack metres of the closest one. */
+    private Match projectRange(double la, double lo, int from, int to, double slack) {
         Match best = new Match();
         best.off = Double.MAX_VALUE;
-        double[] a = new double[2], b = new double[2];
         if (size() < 2) {
             best.off = size() == 1 ? Geo.dist(la, lo, lat[0], lon[0]) : Double.MAX_VALUE;
             return best;
         }
+        int n = Math.max(0, to - from);
+        double[] off = new double[n], along = new double[n];
+        double[] a = new double[2], b = new double[2];
         for (int i = from; i < to; i++) {
             Geo.toXY(la, lo, lat[i], lon[i], a);
             Geo.toXY(la, lo, lat[i + 1], lon[i + 1], b);
@@ -71,11 +78,22 @@ final class Route {
             if (t < 0) t = 0;
             else if (t > 1) t = 1;
             double qx = a[0] + t * dx, qy = a[1] + t * dy;
-            double d = Math.sqrt(qx * qx + qy * qy);
-            if (d < best.off) {
-                best.off = d;
+            off[i - from] = Math.sqrt(qx * qx + qy * qy);
+            along[i - from] = cum[i] + t * (cum[i + 1] - cum[i]);
+            if (off[i - from] < best.off) {
+                best.off = off[i - from];
                 best.seg = i;
-                best.along = cum[i] + t * (cum[i + 1] - cum[i]);
+                best.along = along[i - from];
+            }
+        }
+        if (slack > 0) {
+            for (int k = 0; k < n; k++) {
+                if (off[k] <= best.off + slack) {
+                    best.seg = from + k;
+                    best.along = along[k];
+                    best.off = off[k];
+                    break;
+                }
             }
         }
         return best;

@@ -228,6 +228,7 @@ public class NavService extends Service {
             spoken.clear();
             uiMsg = "";
             sendRoute(r);
+            if (!sim) saveResume(r);
             if (!cpuLock.isHeld()) cpuLock.acquire(6 * 60 * 60 * 1000L);
             speak("开始" + (sim ? "模拟" : "") + "导航，全程" + Geo.fmtDist(r.totalDist)
                     + "，大约" + Math.max(1, Math.round(r.totalDur / 60)) + "分钟"
@@ -247,6 +248,7 @@ public class NavService extends Service {
     void stopNav() {
         h.post(() -> {
             boolean was = navigating;
+            clearResume();
             navigating = false;
             simulating = false;
             route = null;
@@ -309,10 +311,32 @@ public class NavService extends Service {
     private void onLocation(Location loc, boolean gps) {
         if (gps) lastGpsFixAt = SystemClock.elapsedRealtime();
         else if (gpsGood()) return; // GPS is better whenever we have it
+        loc = withMotion(loc);
         last = loc;
         if (simulating) return;
         if (navigating && route != null) processNav(loc, true);
         else sendIdle();
+    }
+
+    private Location prevFix;
+
+    /**
+     * Fills in speed and heading from the previous fix when the provider gives none (network fixes,
+     * some GPS chips). Movement smaller than the GPS noise counts as standing still.
+     */
+    private Location withMotion(Location loc) {
+        Location p = prevFix;
+        prevFix = loc;
+        if (p == null || (loc.hasSpeed() && loc.hasBearing())) return loc;
+        double dt = (loc.getElapsedRealtimeNanos() - p.getElapsedRealtimeNanos()) / 1e9;
+        if (dt < 0.5 || dt > 10) return loc;
+        Location l = new Location(loc);
+        double d = p.distanceTo(loc);
+        double noise = Math.max(3, (loc.hasAccuracy() ? loc.getAccuracy() : 10) * 0.5);
+        boolean moving = d > noise;
+        if (!loc.hasSpeed()) l.setSpeed(moving ? (float) Math.min(d / dt, 30) : 0f);
+        if (!loc.hasBearing() && moving) l.setBearing(p.bearingTo(loc));
+        return l;
     }
 
     private void processNav(Location loc, boolean fresh) {
@@ -354,7 +378,10 @@ public class NavService extends Service {
         }
 
         // Arrival.
-        if (fresh && !arrived && (rem < 20 || toDest < 20 || (rem < 40 && m.off < 40 && toDest < 45))) {
+        // "Near the destination" only counts once most of the route is behind us: on a round trip
+        // the destination is also right next to the start.
+        boolean nearEnd = rem < Math.max(300, r.totalDist * 0.1);
+        if (fresh && !arrived && (rem < 20 || (toDest < 20 && nearEnd) || (rem < 40 && m.off < 40 && toDest < 45))) {
             arrived = true;
             arrivedAt = SystemClock.elapsedRealtime();
             speak("已到达目的地附近，本次导航结束");
@@ -494,6 +521,7 @@ public class NavService extends Service {
     }
 
     private void stopNavNow() {
+        clearResume();
         navigating = false;
         simulating = false;
         route = null;
@@ -601,6 +629,26 @@ public class NavService extends Service {
                 .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
                 .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build();
+    }
+
+    /**
+     * Remembers the destination of a real ride until it ends, so that if the system kills the app
+     * mid-ride the user can pick the ride up again with one tap.
+     */
+    private void saveResume(Route r) {
+        try {
+            JSONObject o = new JSONObject();
+            o.put("name", r.destName);
+            o.put("lat", r.destLat);
+            o.put("lon", r.destLon);
+            o.put("t", System.currentTimeMillis());
+            getSharedPreferences("p", MODE_PRIVATE).edit().putString("resume", o.toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void clearResume() {
+        getSharedPreferences("p", MODE_PRIVATE).edit().remove("resume").apply();
     }
 
     void setVoiceOnGlasses(boolean on) {

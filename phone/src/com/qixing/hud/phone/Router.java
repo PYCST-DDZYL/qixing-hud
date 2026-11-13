@@ -64,6 +64,16 @@ final class Router {
         route.totalDur = r.optDouble("duration", 0);
 
         JSONArray legs = r.getJSONArray("legs");
+        // Where each maneuver sits along the route comes from summing OSRM's step distances, not
+        // from snapping its location onto the line: a route that passes the same corner twice
+        // (loops, out-and-back) would otherwise get turns out of order. Scaled to our geometry.
+        double stepSum = 0;
+        for (int li = 0; li < legs.length(); li++) {
+            JSONArray steps = legs.getJSONObject(li).getJSONArray("steps");
+            for (int i = 0; i < steps.length(); i++) stepSum += steps.getJSONObject(i).optDouble("distance", 0);
+        }
+        double scale = stepSum > 0 ? route.totalDist / stepSum : 1;
+        double acc = 0;
         int hint = 0;
         for (int li = 0; li < legs.length(); li++) {
             JSONArray steps = legs.getJSONObject(li).getJSONArray("steps");
@@ -79,9 +89,14 @@ final class Router {
                 if (s.name.isEmpty()) s.name = st.optString("ref", "");
                 s.lon = loc.getDouble(0);
                 s.lat = loc.getDouble(1);
-                Route.Match m = route.project(s.lat, s.lon, hint);
-                hint = m.seg;
-                s.along = m.along;
+                if (stepSum > 0) {
+                    s.along = Math.min(route.totalDist, acc * scale);
+                } else {
+                    Route.Match m = route.project(s.lat, s.lon, hint);
+                    hint = m.seg;
+                    s.along = m.along;
+                }
+                acc += st.optDouble("distance", 0);
                 s.code = Instr.code(s.type, s.modifier);
                 s.silent = Instr.silent(s);
                 route.steps.add(s);

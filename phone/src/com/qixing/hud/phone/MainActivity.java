@@ -374,22 +374,40 @@ public class MainActivity extends Activity {
         adapter.clear();
         for (Search.Place p : r) {
             String d = near == null ? "" : "  ·  " + Geo.fmtDist(Geo.dist(near.getLatitude(), near.getLongitude(), p.lat, p.lon));
-            adapter.add(p.name + d + (TextUtils.isEmpty(p.addr) ? "" : "\n" + p.addr));
+            adapter.add((p.resume ? "↻ 继续上次导航：" : "") + p.name + d + (TextUtils.isEmpty(p.addr) ? "" : "\n" + p.addr));
         }
         adapter.notifyDataSetChanged();
     }
 
     private void showRecents() {
         List<Search.Place> r = new ArrayList<>();
+        NavService s = NavService.I;
+        SharedPreferences sp = getSharedPreferences("p", MODE_PRIVATE);
+        Search.Place resume = null;
         try {
-            JSONArray a = new JSONArray(getSharedPreferences("p", MODE_PRIVATE).getString("recent", "[]"));
+            // A ride that never ended (the app was closed or killed): offer to continue it.
+            String rs = sp.getString("resume", null);
+            if (rs != null && (s == null || !s.navigating)) {
+                org.json.JSONObject o = new org.json.JSONObject(rs);
+                if (System.currentTimeMillis() - o.optLong("t") < 6 * 3600 * 1000L) {
+                    resume = Search.Place.fromJson(o);
+                    resume.addr = "上次导航没有结束，点这里从当前位置继续";
+                    resume.resume = true;
+                    r.add(resume);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            JSONArray a = new JSONArray(sp.getString("recent", "[]"));
             for (int i = 0; i < a.length(); i++) r.add(Search.Place.fromJson(a.getJSONObject(i)));
         } catch (Exception ignored) {
         }
-        NavService s = NavService.I;
         showPlaces(r, s == null ? null : s.last);
-        if (info != null && r.isEmpty()) info.setText("输入目的地后点“搜索”");
-        else if (info != null) info.setText("最近去过的地方（点一下规划路线）");
+        if (info == null) return;
+        if (resume != null) info.setText("上次导航没有结束。点第一行“继续上次导航”可以接着骑");
+        else if (r.isEmpty()) info.setText("输入目的地后点“搜索”");
+        else info.setText("最近去过的地方（点一下规划路线）");
     }
 
     private void saveRecent(Search.Place p) {
@@ -449,6 +467,37 @@ public class MainActivity extends Activity {
         if (testHandled || NavService.I == null) return;
         Intent it = getIntent();
         String from = it.getStringExtra("sim_from"), to = it.getStringExtra("sim_to");
+        String navTo = it.getStringExtra("nav_to");
+        if (navTo != null) {
+            // --es nav_to "lat,lon": real (GPS-driven) navigation from the current fix, for tests
+            // with an injected test location provider. Waits until a fix exists.
+            if (NavService.I.last == null) return;
+            testHandled = true;
+            try {
+                String[] c = navTo.split(",");
+                Search.Place p = new Search.Place();
+                p.lat = Double.parseDouble(c[0]);
+                p.lon = Double.parseDouble(c[1]);
+                p.name = it.getStringExtra("sim_name") == null ? "测试终点" : it.getStringExtra("sim_name");
+                p.addr = "";
+                Location l = NavService.I.last;
+                bg.execute(() -> {
+                    try {
+                        Route r = Router.fetch(l.getLatitude(), l.getLongitude(), p.lat, p.lon, p.name);
+                        ui.post(() -> {
+                            pending = r;
+                            pendingPlace = p;
+                            start(false);
+                        });
+                    } catch (Exception e) {
+                        ui.post(() -> info.setText("测试路线失败：" + why(e)));
+                    }
+                });
+            } catch (Exception e) {
+                info.setText("测试参数错误");
+            }
+            return;
+        }
         testHandled = true;
         if (from == null || to == null) return;
         try {

@@ -16,6 +16,7 @@ final class Search {
     static final class Place {
         String name, addr;
         double lat, lon;
+        boolean resume; // "continue last ride" entry; not saved
 
         JSONObject toJson() {
             JSONObject o = new JSONObject();
