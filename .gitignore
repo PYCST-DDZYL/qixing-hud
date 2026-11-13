@@ -1,0 +1,6 @@
+out/
+signing/
+*.jks
+*.keystore
+build.local.ps1
+安装包/*.apk
