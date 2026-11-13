@@ -13,7 +13,7 @@ final class HudState implements Cloneable {
     double[] slat = new double[0], slon = new double[0], salong = new double[0];
     String routeDest = "";
 
-    boolean nav, sim, gps, arr, hasPos;
+    boolean nav, sim, gps, arr, hasPos, eco;
     double lat, lon, acc, spd, brg, along, mdist, mlat, mlon, rem;
     int seg, exit, srid;
     long eta;
@@ -91,6 +91,7 @@ final class HudState implements Cloneable {
                 dest = str(j, "dest");
                 msg = str(j, "msg");
                 arr = j.optBoolean("arr");
+                eco = j.optBoolean("eco");
                 stateAt = System.currentTimeMillis();
                 return type;
             }

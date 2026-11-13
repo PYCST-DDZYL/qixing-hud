@@ -82,6 +82,7 @@ public class HudService extends Service {
     private volatile long lastRx;
     private volatile boolean running;
     private static final int MAX_LINE = 2 * 1024 * 1024;
+    private final VoicePlayer voice = new VoicePlayer();
     private final Map<String, Long> beacons = new ConcurrentHashMap<>();
     private final Handler main = new Handler(Looper.getMainLooper());
     private WifiManager.MulticastLock mlock;
@@ -132,6 +133,7 @@ public class HudService extends Service {
         Conn c = active.get();
         if (c != null) c.close();
         if (mlock != null && mlock.isHeld()) mlock.release();
+        voice.shutdown();
         I = null;
         super.onDestroy();
     }
@@ -180,6 +182,10 @@ public class HudService extends Service {
                 String line = new String(buf.toByteArray(), StandardCharsets.UTF_8);
                 buf.reset();
                 if (line.length() > 65536) buf = new java.io.ByteArrayOutputStream(4096); // release big buffer
+                if (line.startsWith("{\"type\":\"say\"")) {
+                    voice.play(line); // voice clips are not HUD state
+                    continue;
+                }
                 String type = st.apply(line);
                 if (type != null) notifyUpdate(type);
             }
@@ -445,7 +451,7 @@ public class HudService extends Service {
                 wake();
                 showHud();
             }
-            if (nav && md < 180 && !key.equals(lastWakeKey)) {
+            if (nav && md < WAKE_DIST && !key.equals(lastWakeKey)) {
                 lastWakeKey = key;
                 wake();
                 if (!HudActivity.visible) showHud();
@@ -457,6 +463,11 @@ public class HudService extends Service {
             if (l != null) l.onHudUpdate();
         });
     }
+
+    /** Light the screen this far before a turn (about 35 s at 25 km/h). */
+    static final double WAKE_DIST = 250;
+    /** In power-saving mode the screen may sleep while the next turn is farther than this. */
+    static final double ECO_DIST = 400;
 
     private void showHud() {
         try {

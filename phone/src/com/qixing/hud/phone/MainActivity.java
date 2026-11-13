@@ -199,6 +199,29 @@ public class MainActivity extends Activity {
         }));
         root.addView(bottom, new LinearLayout.LayoutParams(-1, -2));
 
+        LinearLayout opts = new LinearLayout(this);
+        opts.setOrientation(LinearLayout.HORIZONTAL);
+        SharedPreferences prefs = getSharedPreferences("p", MODE_PRIVATE);
+        CheckBox onGlasses = new CheckBox(this);
+        onGlasses.setText("语音在眼镜播放");
+        onGlasses.setTextColor(Color.rgb(220, 220, 220));
+        onGlasses.setChecked(prefs.getBoolean("voiceGlasses", true));
+        onGlasses.setOnCheckedChangeListener((c, on) -> {
+            prefs.edit().putBoolean("voiceGlasses", on).apply();
+            if (NavService.I != null) NavService.I.setVoiceOnGlasses(on);
+        });
+        CheckBox eco = new CheckBox(this);
+        eco.setText("眼镜省电(路口前亮屏)");
+        eco.setTextColor(Color.rgb(220, 220, 220));
+        eco.setChecked(prefs.getBoolean("eco", false));
+        eco.setOnCheckedChangeListener((c, on) -> {
+            prefs.edit().putBoolean("eco", on).apply();
+            if (NavService.I != null) NavService.I.setEcoScreen(on);
+        });
+        opts.addView(onGlasses, new LinearLayout.LayoutParams(0, -2, 1));
+        opts.addView(eco, new LinearLayout.LayoutParams(0, -2, 1));
+        root.addView(opts, new LinearLayout.LayoutParams(-1, -2));
+
         TextView credit = text(11, Color.rgb(110, 120, 120), false);
         credit.setText("地图数据 © OpenStreetMap 贡献者 · 路线 OSRM（FOSSGIS 免费服务）· 搜索 Photon / Nominatim");
         root.addView(credit);
@@ -311,6 +334,11 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ search & routing
 
+    private static String why(Exception e) {
+        String m = e.getMessage();
+        return m == null || m.isEmpty() ? e.getClass().getSimpleName() : m;
+    }
+
     private void hideKeyboard() {
         InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
         imm.hideSoftInputFromWindow(query.getWindowToken(), 0);
@@ -335,7 +363,7 @@ public class MainActivity extends Activity {
                     info.setText(r.isEmpty() ? "没有找到，换个说法试试（英文地名更容易搜到）" : "点一个结果来规划骑行路线");
                 });
             } catch (Exception e) {
-                ui.post(() -> info.setText("搜索失败：请检查手机网络（" + e.getMessage() + "）"));
+                ui.post(() -> info.setText("搜索失败：请检查手机网络（" + why(e) + "）"));
             }
         });
     }
@@ -395,12 +423,14 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     pending = r;
                     pendingPlace = p;
-                    info.setText(String.format(Locale.getDefault(), "%s路线：全程 %s，约 %d 分钟 → %s\n点“开始导航”出发，或“模拟骑行”先在眼镜上预览",
-                            r.profile, Geo.fmtDist(r.totalDist), Math.max(1, Math.round(r.totalDur / 60)), p.name));
+                    String warn = "驾车".equals(r.profile)
+                            ? "\n⚠ 骑行路线服务暂时不可用，这是驾车路线，可能经过禁止自行车的道路（如高速）" : "";
+                    info.setText(String.format(Locale.getDefault(), "%s路线：全程 %s，约 %d 分钟 → %s%s\n点“开始导航”出发，或“模拟骑行”先在眼镜上预览",
+                            r.profile, Geo.fmtDist(r.totalDist), Math.max(1, Math.round(r.totalDur / 60)), p.name, warn));
                     setButtons();
                 });
             } catch (Exception e) {
-                ui.post(() -> info.setText("路线规划失败：请检查手机网络（" + e.getMessage() + "）"));
+                ui.post(() -> info.setText("路线规划失败：请检查手机网络（" + why(e) + "）"));
             }
         });
     }
@@ -409,6 +439,7 @@ public class MainActivity extends Activity {
         NavService s = NavService.I;
         if (s == null || pending == null) return;
         s.simDetour = false;
+        s.simSpeed = 5.0;
         s.startNav(pending, sim);
         if (pendingPlace != null) saveRecent(pendingPlace);
     }
@@ -431,6 +462,7 @@ public class MainActivity extends Activity {
                     ui.post(() -> {
                         pending = r;
                         NavService.I.simDetour = it.getBooleanExtra("sim_detour", false);
+                        NavService.I.simSpeed = Math.max(1, Math.min(40, it.getFloatExtra("sim_speed", 5f)));
                         NavService.I.startNav(r, true);
                     });
                 } catch (Exception e) {

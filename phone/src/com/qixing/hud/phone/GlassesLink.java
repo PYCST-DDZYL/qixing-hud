@@ -7,9 +7,7 @@ import android.util.Log;
 
 import com.qixing.hud.common.Proto;
 
-import java.io.BufferedReader;
 import java.io.Closeable;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -29,29 +27,84 @@ import java.util.concurrent.CopyOnWriteArrayList;
 final class GlassesLink {
     private static final String TAG = "QixingLink";
 
+    /**
+     * One connected pair of glasses. Writes happen on the client's own sender thread, never on the
+     * caller's: a stalled socket (weak Wi-Fi, half-dead Bluetooth) must not freeze navigation.
+     * Only the newest state is kept; routes and voice clips queue in order.
+     */
     final class Client {
         final Closeable sock;
         final OutputStream out;
         final String kind;
+        private final Object lock = new Object();
+        private final java.util.ArrayDeque<byte[]> queue = new java.util.ArrayDeque<>();
+        private byte[] latestState;
+        private volatile boolean closed;
+        private volatile long writingSince; // 0 when idle
 
         Client(Closeable sock, OutputStream out, String kind) {
             this.sock = sock;
             this.out = out;
             this.kind = kind;
+            thread("tx-" + kind, this::senderLoop);
         }
 
-        synchronized boolean write(byte[] b) {
-            try {
-                out.write(b);
-                out.flush();
-                return true;
-            } catch (Exception e) {
-                close();
-                return false;
+        void enqueue(byte[] b) {
+            boolean dead;
+            synchronized (lock) {
+                // A client this far behind is effectively gone. Dropping it lets the glasses
+                // reconnect and get the current route and state replayed, instead of losing a route.
+                dead = queue.size() >= 16;
+                if (!dead) {
+                    queue.addLast(b);
+                    lock.notifyAll();
+                }
+            }
+            if (dead) close();
+        }
+
+        void setState(byte[] b) {
+            synchronized (lock) {
+                latestState = b;
+                lock.notifyAll();
             }
         }
 
+        /** True if a single write has been stuck long enough that the link is effectively dead. */
+        boolean stalled() {
+            long w = writingSince;
+            return w != 0 && System.currentTimeMillis() - w > 10000;
+        }
+
+        private void senderLoop() {
+            try {
+                while (!closed) {
+                    byte[] b;
+                    synchronized (lock) {
+                        while (!closed && queue.isEmpty() && latestState == null) lock.wait(2000);
+                        if (closed) break;
+                        if (!queue.isEmpty()) {
+                            b = queue.pollFirst();
+                        } else {
+                            b = latestState;
+                            latestState = null;
+                        }
+                    }
+                    writingSince = System.currentTimeMillis();
+                    out.write(b);
+                    out.flush();
+                    writingSince = 0;
+                }
+            } catch (Exception ignored) {
+            }
+            close();
+        }
+
         void close() {
+            closed = true;
+            synchronized (lock) {
+                lock.notifyAll();
+            }
             try {
                 sock.close();
             } catch (Exception ignored) {
@@ -89,33 +142,49 @@ final class GlassesLink {
 
     void sendRoute(String line) {
         routeLine = line;
-        broadcast(line);
+        byte[] b = bytes(line);
+        for (Client c : clients) c.enqueue(b);
     }
 
     void sendState(String line) {
         stateLine = line;
-        broadcast(line);
+        byte[] b = bytes(line);
+        for (Client c : clients) {
+            if (c.stalled()) c.close();
+            else c.setState(b);
+        }
     }
 
-    private void broadcast(String line) {
-        byte[] b = (line + "\n").getBytes(StandardCharsets.UTF_8);
-        for (Client c : clients) c.write(b);
+    /** One-off message (voice clip, ping): delivered in order, not replayed to later clients. */
+    void sendOnce(String line) {
+        byte[] b = bytes(line);
+        for (Client c : clients) c.enqueue(b);
+    }
+
+    private static byte[] bytes(String line) {
+        return (line + "\n").getBytes(StandardCharsets.UTF_8);
     }
 
     private void onClient(Closeable sock, OutputStream out, java.io.InputStream in, String kind) {
+        if (clients.size() >= 4) { // one pair of glasses needs one; refuse connection floods
+            closeQuietly(sock);
+            return;
+        }
         Client c = new Client(sock, out, kind);
         clients.add(c);
         Log.i(TAG, "glasses connected (" + kind + ")");
         String r = routeLine, s = stateLine;
-        c.write("{\"type\":\"hello\",\"v\":1}\n".getBytes(StandardCharsets.UTF_8));
-        if (r != null) c.write((r + "\n").getBytes(StandardCharsets.UTF_8));
-        if (s != null) c.write((s + "\n").getBytes(StandardCharsets.UTF_8));
+        c.enqueue(bytes("{\"type\":\"hello\",\"v\":2}"));
+        if (r != null) c.enqueue(bytes(r));
+        if (s != null) c.setState(bytes(s));
         // Drain whatever the glasses send so we notice when the socket dies.
         thread("rx-" + kind, () -> {
+            // Read and discard without buffering lines: anything on the same Wi-Fi can connect, and
+            // an endless "line" must not be able to run the phone out of memory.
+            byte[] sink = new byte[1024];
             try {
-                BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
-                while (running && br.readLine() != null) {
-                    // pings only
+                while (running && in.read(sink) >= 0) {
+                    // the glasses only send a hello
                 }
             } catch (Exception ignored) {
             }

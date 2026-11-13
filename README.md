@@ -6,16 +6,26 @@
 
 > Free cycling navigation for Rokid AR glasses. The Android phone does GPS, search and bike routing (OpenStreetMap / OSRM / Photon, no API key) and streams turn-by-turn data to a monochrome HUD app on the glasses over Wi-Fi/hotspot or Bluetooth.
 
+| 转弯前 | 环岛 | 偏离路线 |
+|:---:|:---:|:---:|
+| ![转弯](docs/images/hud-turn.png) | ![环岛](docs/images/hud-roundabout.png) | ![重新规划](docs/images/hud-reroute.png) |
+
+**完整的功能介绍和截图见 [docs/功能介绍.md](docs/功能介绍.md)。**
+
 ## 功能
 
 - 骑行路线规划（OSRM 自行车路线）。骑错路会自动重新规划。
-- 中文语音播报转弯（使用手机自带的 TTS）。
+- 中文语音播报转弯：
+  - 默认在**眼镜扬声器**播放，眼镜没连上时改用手机。
+  - 两个路口挨得近时，会提前说"随后右转"。
+  - 用手机播放时会自动压低音乐。
 - 眼镜 HUD：
   - 大转向箭头，环岛会显示第几出口。
   - 离路口的距离，以及要进入的道路名。
   - 车头朝上的路线小地图，轻点触控板可缩放。
   - 车速、剩余距离、预计到达时间。
-- 开始导航、接近路口时自动唤醒眼镜屏幕。导航中屏幕保持常亮。
+- 开始导航、接近路口时自动唤醒眼镜屏幕。可选**省电模式**：离路口远时允许熄屏。
+- 手机通知栏和锁屏显示下一个转弯。
 - 两种连接方式，哪个先连上用哪个：
   - 手机热点或同一 Wi-Fi（TCP，加 UDP 广播自动发现）。
   - 经典蓝牙 RFCOMM。
@@ -84,7 +94,13 @@ build.ps1 不依赖 Gradle 的构建脚本（aapt2 + javac + d8 + apksigner）
 
 消息类型：
 - `route`：路线点 `pts` 和转向点 `steps`。
-- `state`：大约每秒一条，包含位置、车速、下一个动作、距离、剩余里程、预计到达时间等。
+- `state`：大约每秒一条，包含位置、车速、下一个动作、距离、剩余里程、预计到达时间、省电开关 `eco` 等。
+- `say`：语音片段，16 位单声道 PCM，Base64 编码，`rate` 是采样率。
+- `ping`：保活。
+
+## 安全提示
+
+同一个 Wi-Fi 里的设备都能连到手机端的 47800 端口，读取导航数据（包括位置）。建议用手机热点或蓝牙连接眼镜，不要在公共 Wi-Fi 下使用。
 
 ## 使用的免费服务
 

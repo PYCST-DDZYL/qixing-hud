@@ -50,7 +50,10 @@ public class HudActivity extends Activity implements HudService.Listener {
             boolean nav = false;
             if (s != null) {
                 synchronized (s.st) {
-                    nav = s.st.connected && s.st.nav;
+                    HudState st = s.st;
+                    // Power-saving: let the screen sleep on long stretches; it wakes before the next turn.
+                    boolean quiet = st.eco && !st.arr && st.msg.isEmpty() && st.mdist > HudService.ECO_DIST;
+                    nav = st.connected && st.nav && !quiet;
                 }
             }
             if (nav != keepOn) {

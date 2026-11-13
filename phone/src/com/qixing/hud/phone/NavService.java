@@ -62,12 +62,24 @@ public class NavService extends Service {
     private long lastRerouteAt;
     private long arrivedAt;
     private final Set<String> spoken = new HashSet<>();
-    private double simAlong, simSpeed = 5.0;
+    private double simAlong;
+    volatile double simSpeed = 5.0; // m/s; the adb test hook may raise it
     private int simTicks;
     volatile boolean simDetour;
     private long lastStateAt;
     private final double[] tmp = new double[3];
     private double speedAvg;
+    private boolean offAnnounced, rerouteFailSpoken;
+    private long msgUntil;
+    private String notifTitle;
+    private long notifAt;
+
+    // Settings (written from the UI).
+    volatile boolean voiceOnGlasses = true; // play prompts on the glasses' speaker when connected
+    volatile boolean ecoScreen;             // glasses screen only lights up near turns
+    private android.media.AudioManager audio;
+    private android.media.AudioFocusRequest focusReq;
+    private int clipSeq;
 
     private final LocationListener gpsListener = new LocationListener() {
         @Override public void onLocationChanged(Location loc) { onLocation(loc, true); }
@@ -86,7 +98,15 @@ public class NavService extends Service {
     public void onCreate() {
         super.onCreate();
         I = this;
-        voiceOn = getSharedPreferences("p", MODE_PRIVATE).getBoolean("voice", true);
+        android.content.SharedPreferences prefs = getSharedPreferences("p", MODE_PRIVATE);
+        voiceOn = prefs.getBoolean("voice", true);
+        voiceOnGlasses = prefs.getBoolean("voiceGlasses", true);
+        ecoScreen = prefs.getBoolean("eco", false);
+        audio = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+        focusReq = new android.media.AudioFocusRequest.Builder(
+                android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                .setAudioAttributes(navAttrs())
+                .build();
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel(CH, "骑行导航", NotificationManager.IMPORTANCE_LOW));
         Notification n = notif("骑行导航运行中", "眼镜可通过热点或蓝牙连接");
@@ -107,6 +127,8 @@ public class NavService extends Service {
                 if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
                     tts.setLanguage(Locale.getDefault());
                 }
+                tts.setAudioAttributes(navAttrs());
+                tts.setOnUtteranceProgressListener(utterances);
                 ttsReady = true;
             }
         });
@@ -199,12 +221,17 @@ public class NavService extends Service {
             rerouting = false;
             hintSeg = -1;
             offCount = 0;
+            offAnnounced = false;
+            rerouteFailSpoken = false;
+            msgUntil = 0;
+            notifTitle = null;
             spoken.clear();
             uiMsg = "";
             sendRoute(r);
             if (!cpuLock.isHeld()) cpuLock.acquire(6 * 60 * 60 * 1000L);
             speak("开始" + (sim ? "模拟" : "") + "导航，全程" + Geo.fmtDist(r.totalDist)
-                    + "，大约" + Math.max(1, Math.round(r.totalDur / 60)) + "分钟");
+                    + "，大约" + Math.max(1, Math.round(r.totalDur / 60)) + "分钟"
+                    + ("驾车".equals(r.profile) ? "。注意，骑行路线服务不可用，这是驾车路线，请留意禁止自行车的道路" : ""));
             updateNotif("导航中：" + r.destName, "全程 " + Geo.fmtDist(r.totalDist));
             if (sim) {
                 simAlong = 0;
@@ -249,9 +276,11 @@ public class NavService extends Service {
             l.setAccuracy(4f);
             l.setTime(System.currentTimeMillis());
             simTicks++;
-            if (simDetour && simTicks > 25 && simTicks <= 40) {
-                // Test hook: ride ~100 m off the route for a while to exercise rerouting.
-                l.setLatitude(tmp[0] + 0.0009);
+            if (simDetour && simAlong > 600 && simAlong <= 600 + simSpeed * 15) {
+                // Test hook: ride 120 m to the right of the route for 15 s to exercise rerouting.
+                double b = Math.toRadians(tmp[2] + 90);
+                l.setLatitude(tmp[0] + 120 * Math.cos(b) / 111320.0);
+                l.setLongitude(tmp[1] + 120 * Math.sin(b) / (111320.0 * Math.cos(Math.toRadians(tmp[0]))));
             }
             processNav(l, true);
             // Keep ticking at the end point so the arrival screen times out like a real ride.
@@ -267,6 +296,9 @@ public class NavService extends Service {
                 // No fresh fix: refresh the glasses (GPS-weak flag, clock) without re-judging position.
                 if (navigating && route != null && last != null && !simulating) processNav(last, false);
                 else if (!navigating) sendIdle();
+                // Nothing to report (e.g. no fix yet): still keep the link alive, or the glasses'
+                // 9-second watchdog would drop and redial it over and over.
+                if (SystemClock.elapsedRealtime() - lastStateAt > 2500) link.sendOnce("{\"type\":\"ping\"}");
             }
             h.postDelayed(this, 1000);
         }
@@ -310,8 +342,12 @@ public class NavService extends Service {
         // Off-route -> reroute.
         if (fresh && (!simulating || simDetour) && !arrived) {
             double limit = Math.max(35, acc * 1.3);
-            if (m.off > limit && acc < 60) offCount++;
-            else offCount = 0;
+            if (m.off > limit && acc < 60) {
+                offCount++;
+            } else if (m.off <= limit) {
+                offCount = 0;
+                offAnnounced = false; // back on the route: a later detour may be announced again
+            }
             if (offCount >= 3 && !rerouting && SystemClock.elapsedRealtime() - lastRerouteAt > 12000) {
                 reroute(la, lo);
             }
@@ -368,11 +404,29 @@ public class NavService extends Service {
         if (fresh && next != null && !arrived) {
             String key = r.id + ":" + nextIdx;
             String say = act + ("arrive".equals(next.type) ? "" : (road.isEmpty() ? "" : "，" + road));
+            // A second turn right after this one would otherwise be announced too late to act on
+            // ("前方10米…"): mention it now, the way car navigation says "随后右转".
+            String then = "";
+            int afterIdx = -1;
+            for (int i = nextIdx + 1; i < r.steps.size(); i++) {
+                Route.Step s = r.steps.get(i);
+                if (s.silent && !"arrive".equals(s.type)) continue;
+                if (s.along - next.along < 50) {
+                    afterIdx = i;
+                    then = "，随后" + Instr.action(s);
+                }
+                break;
+            }
             if (mdist <= 260 && mdist > 90 && spoken.add(key + ":far")) {
-                speak("前方" + roundSay(mdist) + "，" + say);
+                speak("前方" + roundSay(mdist) + "，" + say + then);
             } else if (mdist <= 60 && mdist > 8 && spoken.add(key + ":near")) {
                 spoken.add(key + ":far");
-                speak("前方" + roundSay(mdist) + "，" + act);
+                speak("前方" + roundSay(mdist) + "，" + act + then);
+            }
+            if (afterIdx >= 0 && spoken.contains(key + ":near")) {
+                // Already announced as "随后…": no separate, too-late prompt for it.
+                spoken.add(r.id + ":" + afterIdx + ":far");
+                spoken.add(r.id + ":" + afterIdx + ":near");
             }
         }
 
@@ -388,7 +442,8 @@ public class NavService extends Service {
         uiMdist = mdist;
         uiRem = rem;
         uiEta = eta;
-        if (!rerouting && !arrived) uiMsg = "";
+        if (!rerouting && !arrived && SystemClock.elapsedRealtime() > msgUntil) uiMsg = "";
+        if (fresh) updateNavNotif(r, mdist, act, road, rem);
 
         try {
             JSONObject j = new JSONObject();
@@ -416,10 +471,25 @@ public class NavService extends Service {
             j.put("dest", r.destName);
             j.put("msg", uiMsg);
             j.put("arr", arrived);
+            j.put("eco", ecoScreen);
             link.sendState(j.toString());
             lastStateAt = SystemClock.elapsedRealtime();
         } catch (Exception e) {
             Log.w(TAG, "state: " + e);
+        }
+    }
+
+    /** Next turn on the phone's notification / lock screen; throttled so it does not flicker. */
+    private void updateNavNotif(Route r, double mdist, String act, String road, double rem) {
+        String title = (arrived ? "已到达" : Geo.fmtDist(Math.round(mdist / 10.0) * 10) + "  " + act);
+        String text = (road.isEmpty() ? "" : road + " · ") + "剩余 " + Geo.fmtDist(rem);
+        long now = SystemClock.elapsedRealtime();
+        if (title.equals(notifTitle) || now - notifAt < 3000) return;
+        notifTitle = title;
+        notifAt = now;
+        try {
+            updateNotif(title, text);
+        } catch (Exception ignored) {
         }
     }
 
@@ -441,7 +511,9 @@ public class NavService extends Service {
         rerouting = true;
         lastRerouteAt = SystemClock.elapsedRealtime();
         uiMsg = "已偏离路线，正在重新规划…";
-        speak("已偏离路线，正在重新规划");
+        // Retries happen every 12 s while off route; announce only the first one.
+        if (!offAnnounced) speak("已偏离路线，正在重新规划");
+        offAnnounced = true;
         final double dLat = r.destLat, dLon = r.destLon;
         final String dName = r.destName;
         net.execute(() -> {
@@ -459,12 +531,17 @@ public class NavService extends Service {
                         simDetour = false;
                     }
                     sendRoute(nr);
-                    speak("已重新规划路线");
+                    speak("已重新规划路线" + ("驾车".equals(nr.profile) ? "。注意，骑行路线服务不可用，这是驾车路线" : ""));
+                    rerouteFailSpoken = false;
                 });
             } catch (Exception e) {
                 h.post(() -> {
                     rerouting = false;
+                    if (!navigating) return;
                     uiMsg = "重新规划失败，请检查手机网络";
+                    msgUntil = SystemClock.elapsedRealtime() + 8000;
+                    if (!rerouteFailSpoken) speak("重新规划失败，请检查手机网络");
+                    rerouteFailSpoken = true;
                 });
             }
         });
@@ -519,10 +596,93 @@ public class NavService extends Service {
         }
     }
 
+    private static android.media.AudioAttributes navAttrs() {
+        return new android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build();
+    }
+
+    void setVoiceOnGlasses(boolean on) {
+        voiceOnGlasses = on;
+        getSharedPreferences("p", MODE_PRIVATE).edit().putBoolean("voiceGlasses", on).apply();
+    }
+
+    void setEcoScreen(boolean on) {
+        ecoScreen = on;
+        getSharedPreferences("p", MODE_PRIVATE).edit().putBoolean("eco", on).apply();
+    }
+
+    /**
+     * Speaks on the glasses' speaker when they are connected and that option is on (the phone is
+     * usually in a pocket while riding); otherwise on the phone, briefly ducking any music.
+     */
     private void speak(String s) {
         Log.i(TAG, "say: " + s);
         if (!voiceOn || !ttsReady) return;
-        tts.speak(s, TextToSpeech.QUEUE_FLUSH, null, "q" + SystemClock.elapsedRealtime());
+        try {
+            if (voiceOnGlasses && !link.clients.isEmpty()) {
+                java.io.File f = new java.io.File(getCacheDir(), "say" + (clipSeq++ % 4) + ".wav");
+                Bundle p = new Bundle();
+                int r = tts.synthesizeToFile(s, p, f, "g:" + f.getAbsolutePath());
+                if (r == TextToSpeech.SUCCESS) return;
+            }
+            tts.speak(s, TextToSpeech.QUEUE_FLUSH, null, "q" + SystemClock.elapsedRealtime());
+        } catch (Exception e) {
+            Log.w(TAG, "speak: " + e);
+        }
+    }
+
+    private final android.speech.tts.UtteranceProgressListener utterances =
+            new android.speech.tts.UtteranceProgressListener() {
+                @Override
+                public void onStart(String id) {
+                    if (id != null && id.startsWith("q")) {
+                        try {
+                            audio.requestAudioFocus(focusReq);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+
+                @Override
+                public void onDone(String id) {
+                    if (id == null) return;
+                    if (id.startsWith("q")) {
+                        releaseFocus();
+                    } else if (id.startsWith("g:")) {
+                        sendClip(new java.io.File(id.substring(2)));
+                    }
+                }
+
+                @Override
+                public void onError(String id) {
+                    if (id != null && id.startsWith("q")) releaseFocus();
+                }
+            };
+
+    private void releaseFocus() {
+        try {
+            audio.abandonAudioFocusRequest(focusReq);
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Sends a synthesized prompt to the glasses as 16-bit mono PCM (downsampled to keep it small). */
+    private void sendClip(java.io.File f) {
+        try {
+            byte[] wav = java.nio.file.Files.readAllBytes(f.toPath());
+            Wav.Pcm pcm = Wav.parse(wav);
+            if (pcm == null) return;
+            pcm = Wav.shrink(pcm, 12000);
+            String b64 = android.util.Base64.encodeToString(pcm.data, android.util.Base64.NO_WRAP);
+            link.sendOnce("{\"type\":\"say\",\"rate\":" + pcm.rate + ",\"pcm\":\"" + b64 + "\"}");
+        } catch (Throwable t) {
+            Log.w(TAG, "clip: " + t);
+        } finally {
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+        }
     }
 
     private static String roundSay(double m) {
