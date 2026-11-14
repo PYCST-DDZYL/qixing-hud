@@ -398,13 +398,14 @@ public class HudService extends Service {
             } else {
                 String html = "<!doctype html><html><head><meta charset='utf-8'>"
                         + "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                        + "<title>骑行导航 手机端</title></head>"
+                        + "<title>骑行导航 手机端 / Bike Nav HUD phone app</title></head>"
                         + "<body style='font-family:sans-serif;background:#111;color:#eee;padding:24px'>"
-                        + "<h2 style='color:#5e7'>骑行导航 · 手机端</h2>"
-                        + "<p>完全免费，不需要账号或密钥。</p>"
+                        + "<h2 style='color:#5e7'>骑行导航 · 手机端<br>Bike Nav HUD · phone app</h2>"
+                        + "<p>完全免费，不需要账号或密钥。<br>Free. No account or API key.</p>"
                         + "<p><a style='display:inline-block;background:#2a6;color:#fff;padding:16px 24px;"
-                        + "border-radius:10px;text-decoration:none;font-size:20px' href='/qixing-phone.apk'>下载安装手机端</a></p>"
+                        + "border-radius:10px;text-decoration:none;font-size:20px' href='/qixing-phone.apk'>下载安装手机端 / Download</a></p>"
                         + "<p>下载后点开安装。若提示被拦截，请临时关闭三星“自动拦截器”，装完再打开。</p>"
+                        + "<p>Open the file to install. If Samsung blocks it, turn off Auto Blocker for a moment and turn it back on afterwards.</p>"
                         + "</body></html>";
                 byte[] b = html.getBytes(StandardCharsets.UTF_8);
                 out.write(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: "

@@ -28,7 +28,8 @@ final class Route {
     double totalDist, totalDur;
     String destName = "";
     double destLat, destLon;
-    String profile = "";
+    String profile = ""; // "bike", "foot" or "car"
+    String raw = "";     // the routing server's response, kept so the ride can continue offline
 
     int size() {
         return lat.length;

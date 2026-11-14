@@ -1,5 +1,7 @@
 package com.qixing.hud.phone;
 
+import com.qixing.hud.common.L;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -10,14 +12,21 @@ import java.util.Locale;
 
 /** Free routing through public OSRM servers. Bicycle first, then walking, then car as last resort. */
 final class Router {
+    /** Profile ids: "bike", "foot", "car". */
     private static final String[][] SERVERS = {
-            {"骑行", "https://routing.openstreetmap.de/routed-bike/route/v1/driving/"},
-            {"步行", "https://routing.openstreetmap.de/routed-foot/route/v1/driving/"},
-            {"驾车", "https://router.project-osrm.org/route/v1/driving/"},
+            {"bike", "https://routing.openstreetmap.de/routed-bike/route/v1/driving/"},
+            {"foot", "https://routing.openstreetmap.de/routed-foot/route/v1/driving/"},
+            {"car", "https://router.project-osrm.org/route/v1/driving/"},
     };
     private static int nextId = 1;
 
     private Router() {}
+
+    static String profileName(String id) {
+        if ("foot".equals(id)) return L.t("步行", "Walking");
+        if ("car".equals(id)) return L.t("驾车", "Driving");
+        return L.t("骑行", "Cycling");
+    }
 
     static Route fetch(double fromLat, double fromLon, double toLat, double toLon, String destName)
             throws IOException {
@@ -26,34 +35,46 @@ final class Router {
             String url = s[1] + String.format(Locale.US, "%.6f,%.6f;%.6f,%.6f", fromLon, fromLat, toLon, toLat)
                     + "?overview=full&geometries=polyline&steps=true&alternatives=false";
             try {
-                Route r = parse(Http.get(url));
-                r.profile = s[0];
-                r.destName = destName == null ? "" : destName;
-                r.destLat = toLat;
-                r.destLon = toLon;
-                synchronized (Router.class) {
-                    r.id = nextId++;
-                }
-                return r;
+                return finish(Http.get(url), s[0], destName, toLat, toLon);
             } catch (IOException e) {
                 last = e;
             } catch (Exception e) {
                 last = new IOException(e.getMessage());
             }
         }
-        throw last != null ? last : new IOException("没有可用的路线服务");
+        throw last != null ? last : new IOException(L.t("没有可用的路线服务", "no routing service available"));
+    }
+
+    /** Rebuilds a route from a saved server response (used to continue a ride without network). */
+    static Route fromSaved(String raw, String profile, String destName, double toLat, double toLon)
+            throws Exception {
+        return finish(raw, profile, destName, toLat, toLon);
+    }
+
+    private static Route finish(String raw, String profile, String destName, double toLat, double toLon)
+            throws Exception {
+        Route r = parse(raw);
+        r.raw = raw;
+        r.profile = profile;
+        r.destName = destName == null ? "" : destName;
+        r.destLat = toLat;
+        r.destLon = toLon;
+        synchronized (Router.class) {
+            r.id = nextId++;
+        }
+        return r;
     }
 
     static Route parse(String body) throws Exception {
         JSONObject j = new JSONObject(body);
         if (!"Ok".equals(j.optString("code"))) {
-            throw new IOException("路线服务返回：" + j.optString("code") + " " + j.optString("message"));
+            throw new IOException(L.t("路线服务返回：", "routing service says: ") + j.optString("code") + " " + j.optString("message"));
         }
         JSONObject r = j.getJSONArray("routes").getJSONObject(0);
         Route route = new Route();
         List<double[]> pts = decode(r.getString("geometry"));
         int n = pts.size();
-        if (n < 2) throw new IOException("路线为空");
+        if (n < 2) throw new IOException(L.t("路线为空", "empty route"));
         route.lat = new double[n];
         route.lon = new double[n];
         for (int i = 0; i < n; i++) {

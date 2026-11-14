@@ -10,6 +10,7 @@ import android.graphics.Typeface;
 import android.view.View;
 
 import com.qixing.hud.common.Geo;
+import com.qixing.hud.common.L;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -28,6 +29,8 @@ final class HudView extends View {
     private final double[] xy = new double[2];
     private final SimpleDateFormat hm = new SimpleDateFormat("HH:mm", Locale.getDefault());
     private boolean zoomIn;
+    private boolean moving;
+    private final Runnable tick = this::invalidate;
 
     HudView(Context c) {
         super(c);
@@ -47,15 +50,28 @@ final class HudView extends View {
     @Override
     protected void onDraw(Canvas c) {
         float sx = getWidth() / 480f, sy = getHeight() / 640f;
+        moving = false;
         int sc = c.save();
         try {
             c.scale(sx, sy);
             HudService svc = HudService.I;
             if (svc == null) {
-                drawCentered(c, "正在启动…", 320, 36, G, true);
+                drawCentered(c, L.t("正在启动…", "Starting…"), 320, 36, G, true);
             } else {
                 // Copy under the lock, draw without it, so drawing never blocks the receiver thread.
                 HudState s = svc.st.snap();
+                // The phone reports once a second; at 25 km/h that is 7 m between reports. Carry
+                // the last report forward along the heading so the display tracks the rider
+                // instead of trailing behind. The next report corrects any drift.
+                moving = s.connected && s.nav && !s.arr && s.gps && s.spd > 1;
+                if (moving) {
+                    double dt = Math.min(1.2, Math.max(0, (System.currentTimeMillis() - s.stateAt) / 1000.0));
+                    double d = s.spd * dt, b = Math.toRadians(s.brg);
+                    s.lat += d * Math.cos(b) / 111320.0;
+                    s.lon += d * Math.sin(b) / (111320.0 * Math.cos(Math.toRadians(s.lat)));
+                    s.mdist = Math.max(0, s.mdist - d);
+                    s.rem = Math.max(0, s.rem - d);
+                }
                 if (!s.connected) drawWaiting(c, svc.localIp);
                 else if (s.nav && s.arr) drawArrived(c, s);
                 else if (s.nav) drawNav(c, s);
@@ -67,42 +83,46 @@ final class HudView extends View {
         } finally {
             c.restoreToCount(sc);
         }
-        postInvalidateDelayed(1000);
+        // Smooth motion while riding (10 frames a second); a slow tick otherwise to save power.
+        // Exactly one pending tick: every draw (also those triggered by phone data) would otherwise
+        // add another timer chain, and after a few minutes the view would redraw flat out.
+        removeCallbacks(tick);
+        postDelayed(tick, moving ? 100 : 1000);
     }
 
     // ------------------------------------------------------------------ screens
 
     private void drawWaiting(Canvas c, String ip) {
-        drawCentered(c, "骑行导航", 120, 50, G, true);
-        drawCentered(c, "等待连接手机", 190, 34, G, false);
+        drawCentered(c, L.t("骑行导航", "Bike Nav HUD"), 120, 50, G, true);
+        drawCentered(c, L.t("等待连接手机", "Waiting for the phone"), 190, 34, G, false);
         float y = 270;
         String[] lines = {
-                "1. 手机打开「骑行导航」",
-                "2. 手机开热点，眼镜连上热点",
-                "   或手机打开蓝牙（已配对即可）",
+                L.t("1. 手机打开「骑行导航」", "1. Open Bike Nav on the phone"),
+                L.t("2. 手机开热点，眼镜连上热点", "2. Join the phone's hotspot"),
+                L.t("   或手机打开蓝牙（已配对即可）", "   or turn on phone Bluetooth"),
         };
         for (String l : lines) {
             drawLeft(c, l, 30, y, 26, GD, false);
             y += 42;
         }
         y += 20;
-        drawLeft(c, "手机端下载：", 30, y, 24, GD, false);
+        drawLeft(c, L.t("手机端下载：", "Get the phone app:"), 30, y, 24, GD, false);
         y += 38;
         if (ip != null && !ip.isEmpty()) {
-            drawLeft(c, "浏览器打开", 30, y, 24, GD, false);
+            drawLeft(c, L.t("浏览器打开", "open in a browser"), 30, y, 24, GD, false);
             y += 40;
             drawLeft(c, "http://" + ip + ":47802", 30, y, 28, G, true);
         } else {
-            drawLeft(c, "眼镜先连上 Wi-Fi 或热点后显示地址", 30, y, 22, GD, false);
+            drawLeft(c, L.t("眼镜先连上 Wi-Fi 或热点后显示地址", "Join Wi-Fi first to see the address"), 30, y, 22, GD, false);
         }
         drawClock(c);
     }
 
     private void drawIdle(Canvas c, HudState s) {
         drawStatus(c, s);
-        drawCentered(c, "骑行导航", 170, 50, G, true);
-        drawCentered(c, "已连接手机", 230, 32, G, false);
-        drawCentered(c, "在手机上搜索目的地并开始导航", 280, 24, GD, false);
+        drawCentered(c, L.t("骑行导航", "Bike Nav HUD"), 170, 50, G, true);
+        drawCentered(c, L.t("已连接手机", "Phone connected"), 230, 32, G, false);
+        drawCentered(c, L.t("在手机上搜索目的地并开始导航", "Search a destination on the phone"), 280, 24, GD, false);
         if (s.hasPos) {
             String spd = String.valueOf(Math.round(s.spd * 3.6));
             drawCentered(c, spd, 450, 110, G, true);
@@ -114,7 +134,7 @@ final class HudView extends View {
     private void drawArrived(Canvas c, HudState s) {
         drawStatus(c, s);
         drawManeuver(c, "arrive", 0, new RectF(160, 90, 320, 250));
-        drawCentered(c, "已到达目的地", 340, 44, G, true);
+        drawCentered(c, L.t("已到达目的地", "You have arrived"), 340, 44, G, true);
         String d = s.dest.isEmpty() ? s.routeDest : s.dest;
         drawCentered(c, ellipsize(d, 440, 30), 400, 30, GD, false);
         drawCentered(c, hm.format(new Date()), 600, 34, GD, false);
@@ -139,8 +159,11 @@ final class HudView extends View {
         c.drawText(du[1], x + w + 8, 125, txt);
 
         // Action and road.
-        String act = s.mdist > 2000 && "straight".equals(s.man) ? "沿当前道路直行" : s.act;
-        drawLeft(c, ellipsize(act, 280, 40), x, 185, 40, G, true);
+        String act = s.mdist > 2000 && "straight".equals(s.man) ? L.t("沿当前道路直行", "Continue straight") : s.act;
+        // English actions run longer than Chinese ones: step the size down before cutting the text.
+        float as = fitSize(act, 280, 40, 34, 28);
+        txt.setTypeface(Typeface.DEFAULT_BOLD);
+        drawLeft(c, ellipsize(act, 280, as), x, 185, as, G, true);
         drawLeft(c, ellipsize(s.road, 452, 32), 16, 248, 32, G, false);
 
         // Map.
@@ -169,7 +192,7 @@ final class HudView extends View {
         txt.setTypeface(Typeface.DEFAULT);
         String rem = Geo.fmtDist(s.rem).replace(" ", "");
         c.drawText(rem, 180, 622, txt);
-        String eta = s.eta > 0 ? hm.format(new Date(s.eta)) + "到" : "";
+        String eta = s.eta > 0 ? (L.en ? "ETA " + hm.format(new Date(s.eta)) : hm.format(new Date(s.eta)) + "到") : "";
         float ew = txt.measureText(eta);
         c.drawText(eta, 470 - ew, 622, txt);
     }
@@ -180,8 +203,8 @@ final class HudView extends View {
         txt.setTypeface(Typeface.DEFAULT);
         txt.setTextSize(20);
         txt.setColor(GD);
-        String k = "bt".equals(s.kind) ? "蓝牙" : "热点";
-        String left = "● " + k + (s.sim ? " · 模拟" : "") + (s.gps ? "" : " · GPS信号弱");
+        String k = "bt".equals(s.kind) ? L.t("蓝牙", "Bluetooth") : L.t("热点", "Wi-Fi");
+        String left = "● " + k + (s.sim ? L.t(" · 模拟", " · sim") : "") + (s.gps ? "" : L.t(" · GPS信号弱", " · weak GPS"));
         c.drawText(left, 14, 26, txt);
         String t = hm.format(new Date());
         c.drawText(t, 466 - txt.measureText(t), 26, txt);
@@ -378,9 +401,19 @@ final class HudView extends View {
     private String[] distParts(double m) {
         if (m < 1000) {
             long v = m < 100 ? Math.round(m) : Math.round(m / 10.0) * 10;
-            return new String[]{String.valueOf(v), "米"};
+            return new String[]{String.valueOf(v), L.t("米", "m")};
         }
-        return new String[]{String.format(Locale.US, m < 10000 ? "%.1f" : "%.0f", m / 1000.0), "公里"};
+        return new String[]{String.format(Locale.US, m < 10000 ? "%.1f" : "%.0f", m / 1000.0), L.t("公里", "km")};
+    }
+
+    /** The largest of the given bold sizes at which s fits maxW (the last one if none does). */
+    private float fitSize(String s, float maxW, float... sizes) {
+        txt.setTypeface(Typeface.DEFAULT_BOLD);
+        for (float z : sizes) {
+            txt.setTextSize(z);
+            if (s == null || txt.measureText(s) <= maxW) return z;
+        }
+        return sizes[sizes.length - 1];
     }
 
     private String ellipsize(String s, float maxW, float size) {

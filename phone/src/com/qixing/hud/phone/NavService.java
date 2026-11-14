@@ -21,6 +21,7 @@ import android.speech.tts.TextToSpeech;
 import android.util.Log;
 
 import com.qixing.hud.common.Geo;
+import com.qixing.hud.common.L;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -99,6 +100,7 @@ public class NavService extends Service {
         super.onCreate();
         I = this;
         android.content.SharedPreferences prefs = getSharedPreferences("p", MODE_PRIVATE);
+        L.apply(prefs.getString("lang", "auto"));
         voiceOn = prefs.getBoolean("voice", true);
         voiceOnGlasses = prefs.getBoolean("voiceGlasses", true);
         ecoScreen = prefs.getBoolean("eco", false);
@@ -109,7 +111,7 @@ public class NavService extends Service {
                 .build();
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel(CH, "骑行导航", NotificationManager.IMPORTANCE_LOW));
-        Notification n = notif("骑行导航运行中", "眼镜可通过热点或蓝牙连接");
+        Notification n = notif(idleTitle(), idleText());
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
         } else {
@@ -123,10 +125,7 @@ public class NavService extends Service {
         startGps();
         tts = new TextToSpeech(this, st -> {
             if (st == TextToSpeech.SUCCESS) {
-                int r = tts.setLanguage(Locale.SIMPLIFIED_CHINESE);
-                if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    tts.setLanguage(Locale.getDefault());
-                }
+                applyTtsLang();
                 tts.setAudioAttributes(navAttrs());
                 tts.setOnUtteranceProgressListener(utterances);
                 ttsReady = true;
@@ -230,10 +229,15 @@ public class NavService extends Service {
             sendRoute(r);
             if (!sim) saveResume(r);
             if (!cpuLock.isHeld()) cpuLock.acquire(6 * 60 * 60 * 1000L);
-            speak("开始" + (sim ? "模拟" : "") + "导航，全程" + Geo.fmtDist(r.totalDist)
-                    + "，大约" + Math.max(1, Math.round(r.totalDur / 60)) + "分钟"
-                    + ("驾车".equals(r.profile) ? "。注意，骑行路线服务不可用，这是驾车路线，请留意禁止自行车的道路" : ""));
-            updateNotif("导航中：" + r.destName, "全程 " + Geo.fmtDist(r.totalDist));
+            long mins = Math.max(1, Math.round(r.totalDur / 60));
+            boolean car = "car".equals(r.profile);
+            speak(L.en
+                    ? (sim ? "Simulated navigation started. " : "Navigation started. ") + sayDist(r.totalDist)
+                    + ", about " + mins + (mins == 1 ? " minute." : " minutes.")
+                    + (car ? " Warning: the cycling route service is unavailable. This is a driving route. Watch for roads closed to bicycles." : "")
+                    : "开始" + (sim ? "模拟" : "") + "导航，全程" + Geo.fmtDist(r.totalDist) + "，大约" + mins + "分钟"
+                    + (car ? "。注意，骑行路线服务不可用，这是驾车路线，请留意禁止自行车的道路" : ""));
+            updateNotif(L.t("导航中：", "Navigating: ") + r.destName, L.t("全程 ", "Total ") + Geo.fmtDist(r.totalDist));
             if (sim) {
                 simAlong = 0;
                 simTicks = 0;
@@ -258,8 +262,8 @@ public class NavService extends Service {
             if (cpuLock.isHeld()) cpuLock.release();
             link.sendRoute("{\"type\":\"route\",\"rid\":-1,\"pts\":[]}");
             sendIdle();
-            if (was) speak("导航已结束");
-            updateNotif("骑行导航运行中", "眼镜可通过热点或蓝牙连接");
+            if (was) speak(L.t("导航已结束", "Navigation ended."));
+            updateNotif(idleTitle(), idleText());
         });
     }
 
@@ -308,9 +312,40 @@ public class NavService extends Service {
 
     // ---------------------------------------------------------------- engine
 
+    private int rejected; // consecutive fixes thrown away (nav thread)
+
+    /** How old a fix is, in seconds. */
+    static double ageSec(Location l) {
+        return (SystemClock.elapsedRealtimeNanos() - l.getElapsedRealtimeNanos()) / 1e9;
+    }
+
+    /** A position recent and precise enough to start a route from. */
+    boolean hasFreshFix() {
+        Location l = last;
+        return l != null && ageSec(l) < 30 && (!l.hasAccuracy() || l.getAccuracy() <= 100);
+    }
+
     private void onLocation(Location loc, boolean gps) {
+        if (!gps && gpsGood()) return; // GPS is better whenever we have it
+        if (navigating && !simulating) {
+            // While riding, a bad fix is worse than no fix: it would move the rider on the map,
+            // and could even look like an arrival. Skip very imprecise fixes and impossible jumps
+            // (but never more than a few in a row, so a real jump is accepted in the end).
+            Location p = prevFix;
+            boolean vague = loc.hasAccuracy() && loc.getAccuracy() > 80;
+            boolean jump = false;
+            if (p != null) {
+                double dt = (loc.getElapsedRealtimeNanos() - p.getElapsedRealtimeNanos()) / 1e9;
+                jump = dt > 0 && dt < 5 && p.distanceTo(loc) / dt > 35; // over 125 km/h on a bike
+            }
+            if ((vague || jump) && rejected < 5) {
+                rejected++;
+                Log.i(TAG, "fix skipped: " + (vague ? "accuracy " + Math.round(loc.getAccuracy()) + " m" : "jump"));
+                return;
+            }
+        }
+        rejected = 0;
         if (gps) lastGpsFixAt = SystemClock.elapsedRealtime();
-        else if (gpsGood()) return; // GPS is better whenever we have it
         loc = withMotion(loc);
         last = loc;
         if (simulating) return;
@@ -384,8 +419,8 @@ public class NavService extends Service {
         if (fresh && !arrived && (rem < 20 || (toDest < 20 && nearEnd) || (rem < 40 && m.off < 40 && toDest < 45))) {
             arrived = true;
             arrivedAt = SystemClock.elapsedRealtime();
-            speak("已到达目的地附近，本次导航结束");
-            uiMsg = "已到达";
+            speak(L.t("已到达目的地附近，本次导航结束", "You have arrived. Navigation ended."));
+            uiMsg = L.t("已到达", "Arrived");
         }
         if (arrived && SystemClock.elapsedRealtime() - arrivedAt > 25000) {
             stopNavNow();
@@ -408,7 +443,7 @@ public class NavService extends Service {
         int exit = 0;
         double mlat = r.destLat, mlon = r.destLon;
         if (next == null) {
-            act = "到达目的地";
+            act = L.t("到达目的地", "Arrive");
             road = r.destName;
             code = "arrive";
         } else {
@@ -421,7 +456,7 @@ public class NavService extends Service {
             if ("arrive".equals(next.type)) road = r.destName;
         }
         if (arrived) {
-            act = "已到达";
+            act = L.t("已到达", "Arrived");
             road = r.destName;
             code = "arrive";
             mdist = 0;
@@ -430,7 +465,7 @@ public class NavService extends Service {
         // Voice prompts.
         if (fresh && next != null && !arrived) {
             String key = r.id + ":" + nextIdx;
-            String say = act + ("arrive".equals(next.type) ? "" : (road.isEmpty() ? "" : "，" + road));
+            String say = act + ("arrive".equals(next.type) ? "" : (road.isEmpty() ? "" : L.t("，", " ") + road));
             // A second turn right after this one would otherwise be announced too late to act on
             // ("前方10米…"): mention it now, the way car navigation says "随后右转".
             String then = "";
@@ -440,15 +475,15 @@ public class NavService extends Service {
                 if (s.silent && !"arrive".equals(s.type)) continue;
                 if (s.along - next.along < 50) {
                     afterIdx = i;
-                    then = "，随后" + Instr.action(s);
+                    then = L.t("，随后", ", then ") + lc(Instr.action(s));
                 }
                 break;
             }
             if (mdist <= 260 && mdist > 90 && spoken.add(key + ":far")) {
-                speak("前方" + roundSay(mdist) + "，" + say + then);
+                speak(ahead(mdist) + lc(say) + then);
             } else if (mdist <= 60 && mdist > 8 && spoken.add(key + ":near")) {
                 spoken.add(key + ":far");
-                speak("前方" + roundSay(mdist) + "，" + act + then);
+                speak(ahead(mdist) + lc(act) + then);
             }
             if (afterIdx >= 0 && spoken.contains(key + ":near")) {
                 // Already announced as "随后…": no separate, too-late prompt for it.
@@ -499,6 +534,7 @@ public class NavService extends Service {
             j.put("msg", uiMsg);
             j.put("arr", arrived);
             j.put("eco", ecoScreen);
+            j.put("lang", L.en ? "en" : "zh");
             link.sendState(j.toString());
             lastStateAt = SystemClock.elapsedRealtime();
         } catch (Exception e) {
@@ -508,8 +544,8 @@ public class NavService extends Service {
 
     /** Next turn on the phone's notification / lock screen; throttled so it does not flicker. */
     private void updateNavNotif(Route r, double mdist, String act, String road, double rem) {
-        String title = (arrived ? "已到达" : Geo.fmtDist(Math.round(mdist / 10.0) * 10) + "  " + act);
-        String text = (road.isEmpty() ? "" : road + " · ") + "剩余 " + Geo.fmtDist(rem);
+        String title = (arrived ? L.t("已到达", "Arrived") : Geo.fmtDist(Math.round(mdist / 10.0) * 10) + "  " + act);
+        String text = (road.isEmpty() ? "" : road + " · ") + L.t("剩余 ", "Remaining ") + Geo.fmtDist(rem);
         long now = SystemClock.elapsedRealtime();
         if (title.equals(notifTitle) || now - notifAt < 3000) return;
         notifTitle = title;
@@ -530,7 +566,7 @@ public class NavService extends Service {
         if (cpuLock.isHeld()) cpuLock.release();
         link.sendRoute("{\"type\":\"route\",\"rid\":-1,\"pts\":[]}");
         sendIdle();
-        updateNotif("骑行导航运行中", "眼镜可通过热点或蓝牙连接");
+        updateNotif(idleTitle(), idleText());
     }
 
     private void reroute(double la, double lo) {
@@ -538,9 +574,9 @@ public class NavService extends Service {
         if (r == null) return;
         rerouting = true;
         lastRerouteAt = SystemClock.elapsedRealtime();
-        uiMsg = "已偏离路线，正在重新规划…";
+        uiMsg = L.t("已偏离路线，正在重新规划…", "Off route. Rerouting…");
         // Retries happen every 12 s while off route; announce only the first one.
-        if (!offAnnounced) speak("已偏离路线，正在重新规划");
+        if (!offAnnounced) speak(L.t("已偏离路线，正在重新规划", "Off route. Rerouting."));
         offAnnounced = true;
         final double dLat = r.destLat, dLon = r.destLon;
         final String dName = r.destName;
@@ -559,16 +595,18 @@ public class NavService extends Service {
                         simDetour = false;
                     }
                     sendRoute(nr);
-                    speak("已重新规划路线" + ("驾车".equals(nr.profile) ? "。注意，骑行路线服务不可用，这是驾车路线" : ""));
+                    if (!simulating) saveResume(nr);
+                    speak(L.t("已重新规划路线", "Route updated.") + ("car".equals(nr.profile)
+                            ? L.t("。注意，骑行路线服务不可用，这是驾车路线", " Warning: the cycling route service is unavailable. This is a driving route.") : ""));
                     rerouteFailSpoken = false;
                 });
             } catch (Exception e) {
                 h.post(() -> {
                     rerouting = false;
                     if (!navigating) return;
-                    uiMsg = "重新规划失败，请检查手机网络";
+                    uiMsg = L.t("重新规划失败，请检查手机网络", "Rerouting failed. Check the network.");
                     msgUntil = SystemClock.elapsedRealtime() + 8000;
-                    if (!rerouteFailSpoken) speak("重新规划失败，请检查手机网络");
+                    if (!rerouteFailSpoken) speak(L.t("重新规划失败，请检查手机网络", "Rerouting failed. Check the phone's network."));
                     rerouteFailSpoken = true;
                 });
             }
@@ -610,6 +648,7 @@ public class NavService extends Service {
             j.put("type", "state");
             j.put("nav", false);
             j.put("gps", gpsGood());
+            j.put("lang", L.en ? "en" : "zh");
             if (l != null) {
                 j.put("lat", l.getLatitude());
                 j.put("lon", l.getLongitude());
@@ -645,10 +684,74 @@ public class NavService extends Service {
             getSharedPreferences("p", MODE_PRIVATE).edit().putString("resume", o.toString()).apply();
         } catch (Exception ignored) {
         }
+        // Keep the route itself too, so the ride can be continued even with no network.
+        final String profile = r.profile, raw = r.raw;
+        final java.io.File f = savedRouteFile(this);
+        net.execute(() -> {
+            try {
+                if (raw == null || raw.isEmpty()) return;
+                java.nio.file.Files.write(f.toPath(),
+                        (profile + "\n" + raw).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            } catch (Exception e) {
+                Log.w(TAG, "save route: " + e);
+            }
+        });
     }
 
     private void clearResume() {
         getSharedPreferences("p", MODE_PRIVATE).edit().remove("resume").apply();
+        final java.io.File f = savedRouteFile(this);
+        try {
+            net.execute(() -> {
+                //noinspection ResultOfMethodCallIgnored
+                f.delete();
+            });
+        } catch (Exception ignored) {
+        }
+    }
+
+    static java.io.File savedRouteFile(android.content.Context c) {
+        return new java.io.File(c.getFilesDir(), "last-route.txt");
+    }
+
+    /** The route saved by the unfinished ride, or null. Network-free; call off the main thread. */
+    static Route loadSavedRoute(android.content.Context c, String destName, double lat, double lon) {
+        try {
+            java.io.File f = savedRouteFile(c);
+            if (!f.exists() || f.length() > 8 * 1024 * 1024) return null;
+            String s = new String(java.nio.file.Files.readAllBytes(f.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+            int nl = s.indexOf('\n');
+            if (nl <= 0) return null;
+            Route r = Router.fromSaved(s.substring(nl + 1), s.substring(0, nl), destName, lat, lon);
+            // Only if it really leads to the same place.
+            return Geo.dist(r.lat[r.size() - 1], r.lon[r.size() - 1], lat, lon) < 500 ? r : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Voice follows the app language; falls back to the phone's default voice if it is missing. */
+    private void applyTtsLang() {
+        try {
+            int r = tts.setLanguage(L.en ? Locale.US : Locale.SIMPLIFIED_CHINESE);
+            if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts.setLanguage(Locale.getDefault());
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    void setLang(String setting) {
+        getSharedPreferences("p", MODE_PRIVATE).edit().putString("lang", setting).apply();
+        L.apply(setting);
+        if (ttsReady) applyTtsLang();
+        h.post(() -> {
+            notifTitle = null;
+            if (!navigating) {
+                updateNotif(idleTitle(), idleText());
+                sendIdle();
+            }
+        });
     }
 
     void setVoiceOnGlasses(boolean on) {
@@ -733,10 +836,34 @@ public class NavService extends Service {
         }
     }
 
+    private static String idleTitle() {
+        return L.t("骑行导航运行中", "Bike Nav is running");
+    }
+
+    private static String idleText() {
+        return L.t("眼镜可通过热点或蓝牙连接", "Glasses connect by hotspot or Bluetooth");
+    }
+
+    /** "前方250米，" / "In 250 meters, ". */
+    private static String ahead(double m) {
+        return L.en ? "In " + roundSay(m) + ", " : "前方" + roundSay(m) + "，";
+    }
+
+    /** Spoken total distance. */
+    private static String sayDist(double m) {
+        return m >= 1000 ? String.format(Locale.US, "%.1f kilometers", m / 1000) : Math.round(m / 10.0) * 10 + " meters";
+    }
+
+    /** English reads better mid-sentence in lower case ("In 50 meters, turn left"). */
+    private static String lc(String s) {
+        if (!L.en || s.isEmpty()) return s;
+        return Character.toLowerCase(s.charAt(0)) + s.substring(1);
+    }
+
     private static String roundSay(double m) {
-        if (m >= 1000) return String.format(Locale.US, "%.1f公里", m / 1000);
+        if (m >= 1000) return String.format(Locale.US, "%.1f", m / 1000) + L.t("公里", " kilometers");
         long v = m >= 100 ? Math.round(m / 50.0) * 50 : Math.max(10, Math.round(m / 10.0) * 10);
-        return v + "米";
+        return v + L.t("米", " meters");
     }
 
     private static double round1(double v) {

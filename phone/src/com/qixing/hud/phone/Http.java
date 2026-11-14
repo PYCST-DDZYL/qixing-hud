@@ -14,12 +14,17 @@ final class Http {
 
     private Http() {}
 
+    /** Test hook: behave as if there were no network. */
+    static volatile boolean offline;
+
     static String get(String url) throws IOException {
+        if (offline) throw new IOException("offline (test)");
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(10000);
         c.setReadTimeout(20000);
         c.setRequestProperty("User-Agent", UA);
-        c.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+        c.setRequestProperty("Accept-Language",
+                com.qixing.hud.common.L.en ? "en-US,en;q=0.9" : "zh-CN,zh;q=0.9,en;q=0.8");
         try {
             int code = c.getResponseCode();
             InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();

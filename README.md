@@ -4,13 +4,13 @@
 
 **完全免费**：不需要 Google Maps API Key，也不需要注册任何账号。地图数据来自 OpenStreetMap，路线由 OSRM 计算，地点搜索用 Photon / Nominatim。
 
-> Free cycling navigation for Rokid AR glasses. The Android phone does GPS, search and bike routing (OpenStreetMap / OSRM / Photon, no API key) and streams turn-by-turn data to a monochrome HUD app on the glasses over Wi-Fi/hotspot or Bluetooth.
+> Free cycling navigation for Rokid AR glasses. The Android phone does GPS, search and bike routing (OpenStreetMap / OSRM / Photon, no API key) and streams turn-by-turn data to a monochrome HUD app on the glasses over Wi-Fi/hotspot or Bluetooth. The apps speak Chinese and English: they follow the phone's language, and a button in the phone app switches at any time.
 
 | 转弯前 | 环岛 | 偏离路线 |
 |:---:|:---:|:---:|
 | ![转弯](docs/images/hud-turn.png) | ![环岛](docs/images/hud-roundabout.png) | ![重新规划](docs/images/hud-reroute.png) |
 
-**完整的功能介绍和截图见 [docs/功能介绍.md](docs/功能介绍.md)。**
+**完整的功能介绍和截图见 [docs/功能介绍.md](docs/功能介绍.md)。** · **[English guide](docs/README_EN.md)**
 
 ## 功能
 
@@ -26,7 +26,8 @@
   - 车速、剩余距离、预计到达时间。
 - 开始导航、接近路口时自动唤醒眼镜屏幕。可选**省电模式**：离路口远时允许熄屏。
 - 手机通知栏和锁屏显示下一个转弯。
-- 骑到一半手机端被系统关掉，重新打开点"继续上次导航"即可接着骑。
+- **中文 / English**：界面、语音、眼镜画面都支持两种语言，默认跟随系统语言，可随时切换。
+- 骑到一半手机端被系统关掉，重新打开点"继续上次导航"即可接着骑。没有网络时用开始导航时保存的路线。
 - 往返、绕圈路线（终点在起点附近、路线经过同一路口两次）判断不会错乱。
 - 两种连接方式，哪个先连上用哪个：
   - 手机热点或同一 Wi-Fi（TCP，加 UDP 广播自动发现）。
@@ -96,7 +97,7 @@ build.ps1 不依赖 Gradle 的构建脚本（aapt2 + javac + d8 + apksigner）
 
 消息类型：
 - `route`：路线点 `pts` 和转向点 `steps`。
-- `state`：大约每秒一条，包含位置、车速、下一个动作、距离、剩余里程、预计到达时间、省电开关 `eco` 等。
+- `state`：大约每秒一条，包含位置、车速、下一个动作、距离、剩余里程、预计到达时间、省电开关 `eco`、语言 `lang`（`zh` / `en`）等。
 - `say`：语音片段，16 位单声道 PCM，Base64 编码，`rate` 是采样率。
 - `ping`：保活。
 

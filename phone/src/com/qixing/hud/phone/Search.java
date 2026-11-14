@@ -1,6 +1,7 @@
 package com.qixing.hud.phone;
 
 import com.qixing.hud.common.Geo;
+import com.qixing.hud.common.L;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -52,7 +53,7 @@ final class Search {
             Place p = new Place();
             p.lat = Double.parseDouble(m.group(1));
             p.lon = Double.parseDouble(m.group(2));
-            p.name = "坐标 " + m.group(1) + "," + m.group(2);
+            p.name = L.t("坐标 ", "Point ") + m.group(1) + "," + m.group(2);
             p.addr = "";
             out.add(p);
             return out;
@@ -71,7 +72,7 @@ final class Search {
                 p.lat = c.getDouble(1);
                 String street = join(" ", pr.optString("housenumber"), pr.optString("street"));
                 p.name = pr.optString("name", "");
-                if (p.name.isEmpty()) p.name = street.isEmpty() ? pr.optString("city", "未命名地点") : street;
+                if (p.name.isEmpty()) p.name = street.isEmpty() ? pr.optString("city", L.t("未命名地点", "Unnamed place")) : street;
                 p.addr = join(", ", p.name.equals(street) ? "" : street, pr.optString("city"),
                         pr.optString("state"), pr.optString("country"));
                 add(out, p);

@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
 import android.util.Log;
 
+import com.qixing.hud.common.L;
 import com.qixing.hud.common.Proto;
 
 import java.io.Closeable;
@@ -217,11 +218,11 @@ final class GlassesLink {
             try {
                 BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
                 if (ad == null) {
-                    btError = "手机没有蓝牙";
+                    btError = L.t("手机没有蓝牙", "no Bluetooth on this phone");
                     return;
                 }
                 if (!ad.isEnabled()) {
-                    btError = "蓝牙未打开";
+                    btError = L.t("蓝牙未打开", "Bluetooth is off");
                     sleep(4000);
                     continue;
                 }
@@ -232,7 +233,7 @@ final class GlassesLink {
                     onClient(s, s.getOutputStream(), s.getInputStream(), "bt");
                 }
             } catch (SecurityException e) {
-                btError = "没有蓝牙权限";
+                btError = L.t("没有蓝牙权限", "Bluetooth permission missing");
                 sleep(5000);
             } catch (Exception e) {
                 if (running) Log.w(TAG, "bt server: " + e);

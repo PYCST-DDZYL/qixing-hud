@@ -33,8 +33,8 @@ public final class Geo {
         if (m < 0) m = 0;
         if (m < 1000) {
             long v = m < 100 ? Math.round(m) : Math.round(m / 10.0) * 10;
-            return v + " 米";
+            return v + (L.en ? " m" : " 米");
         }
-        return String.format(java.util.Locale.US, m < 10000 ? "%.1f 公里" : "%.0f 公里", m / 1000.0);
+        return String.format(java.util.Locale.US, m < 10000 ? "%.1f" : "%.0f", m / 1000.0) + (L.en ? " km" : " 公里");
     }
 }

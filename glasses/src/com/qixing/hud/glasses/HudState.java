@@ -92,6 +92,8 @@ final class HudState implements Cloneable {
                 msg = str(j, "msg");
                 arr = j.optBoolean("arr");
                 eco = j.optBoolean("eco");
+                // The glasses show the language chosen on the phone.
+                if (j.has("lang")) com.qixing.hud.common.L.en = "en".equals(j.optString("lang"));
                 stateAt = System.currentTimeMillis();
                 return type;
             }
