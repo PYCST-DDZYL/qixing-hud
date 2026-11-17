@@ -59,6 +59,7 @@ public class NavService extends Service {
 
     // Engine state (nav thread only).
     private int hintSeg = -1;
+    private final Tracker tracker = new Tracker();
     private int offCount;
     private long lastRerouteAt;
     private long arrivedAt;
@@ -394,7 +395,10 @@ public class NavService extends Service {
 
         Route.Match m = r.project(la, lo, hintSeg);
         hintSeg = m.seg;
-        double along = m.along;
+        // Shown position: on the route line, with a smoothed distance along it (see Tracker).
+        tracker.update(r, m, la, lo, spd, loc.hasBearing() ? loc.getBearing() : Double.NaN,
+                fresh ? SystemClock.elapsedRealtimeNanos() : 0);
+        double along = tracker.along;
         double rem = Math.max(0, r.totalDist - along);
         double toDest = Geo.dist(la, lo, r.destLat, r.destLon);
 
@@ -497,7 +501,7 @@ public class NavService extends Service {
         if (speedAvg > 2.0) remDur = rem / speedAvg;
         long eta = System.currentTimeMillis() + (long) (remDur * 1000);
 
-        double brg = (loc.hasBearing() && spd > 1.5) ? loc.getBearing() : r.segBearing(m.seg);
+        double brg = tracker.brg;
 
         uiAction = act;
         uiRoad = road;
@@ -513,8 +517,8 @@ public class NavService extends Service {
             j.put("nav", true);
             j.put("sim", simulating);
             j.put("gps", simulating || gpsGood());
-            j.put("lat", la);
-            j.put("lon", lo);
+            j.put("lat", tracker.lat);
+            j.put("lon", tracker.lon);
             j.put("acc", Math.round(acc));
             j.put("spd", round1(spd));
             j.put("brg", Math.round(brg));

@@ -123,8 +123,12 @@ final class Route {
             out[2] = Geo.bearing(lat[n - 2], lon[n - 2], lat[n - 1], lon[n - 1]);
             return;
         }
-        int i = 0;
-        while (i < n - 2 && cum[i + 1] < d) i++;
+        int i = 0, hi = n - 2; // binary search: last i with cum[i] <= d
+        while (i < hi) {
+            int mid = (i + hi + 1) >>> 1;
+            if (cum[mid] <= d) i = mid;
+            else hi = mid - 1;
+        }
         double segLen = cum[i + 1] - cum[i];
         double t = segLen <= 0 ? 0 : (d - cum[i]) / segLen;
         out[0] = lat[i] + t * (lat[i + 1] - lat[i]);
