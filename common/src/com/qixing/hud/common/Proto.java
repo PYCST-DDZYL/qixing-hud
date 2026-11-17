@@ -10,6 +10,12 @@ public final class Proto {
     public static final String BEACON_PREFIX = "QXHUD1:";
     public static final UUID BT_UUID = UUID.fromString("6b1c2a50-4b6e-4f0e-9d3a-7f1c5e2b8a41");
     public static final String BT_NAME = "QixingHUD";
+    /**
+     * Bluetooth LE link that needs no pairing: the glasses advertise manufacturer data
+     * BLE_MAGIC + a 2-byte L2CAP channel number (PSM), the phone scans for it and connects.
+     */
+    public static final int BLE_MFR = 0xFFFF;
+    public static final byte[] BLE_MAGIC = {'Q', 'X', 'H', '1'};
 
     private Proto() {}
 }

@@ -1,6 +1,11 @@
 package com.qixing.hud.phone;
 
 import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.le.BluetoothLeScanner;
+import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanFilter;
+import android.bluetooth.le.ScanResult;
+import android.bluetooth.le.ScanSettings;
 import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
 import android.util.Log;
@@ -23,7 +28,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Serves the glasses over two transports at once: TCP (phone hotspot / same Wi-Fi, announced by
- * UDP broadcast beacons) and Bluetooth RFCOMM (works with the glasses' existing pairing).
+ * UDP broadcast beacons), Bluetooth RFCOMM (when the glasses are paired with this phone) and a
+ * Bluetooth LE channel that needs no pairing at all.
  */
 final class GlassesLink {
     private static final String TAG = "QixingLink";
@@ -125,6 +131,7 @@ final class GlassesLink {
         running = true;
         thread("tcp-accept", this::tcpLoop);
         thread("bt-accept", this::btLoop);
+        thread("ble-scan", this::bleLoop);
         thread("beacon", this::beaconLoop);
     }
 
@@ -240,6 +247,80 @@ final class GlassesLink {
                 sleep(3000);
             }
             closeQuietly(btServer);
+        }
+    }
+
+    /**
+     * Pairing-free Bluetooth: while no glasses are connected, scan for the glasses' Bluetooth LE
+     * advertisement and open the L2CAP channel it names.
+     */
+    private void bleLoop() {
+        if (android.os.Build.VERSION.SDK_INT < 29) return; // LE L2CAP channels need Android 10
+        while (running) {
+            if (!clients.isEmpty()) {
+                sleep(2000);
+                continue;
+            }
+            BluetoothLeScanner sc = null;
+            ScanCallback cb = null;
+            try {
+                BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
+                sc = ad != null && ad.isEnabled() ? ad.getBluetoothLeScanner() : null;
+                if (sc == null) {
+                    sleep(4000);
+                    continue;
+                }
+                final Object lock = new Object();
+                final ScanResult[] found = new ScanResult[1];
+                cb = new ScanCallback() {
+                    @Override
+                    public void onScanResult(int type, ScanResult r) {
+                        synchronized (lock) {
+                            if (found[0] == null) found[0] = r;
+                            lock.notifyAll();
+                        }
+                    }
+
+                    @Override
+                    public void onScanFailed(int errorCode) {
+                        Log.w(TAG, "ble scan failed: " + errorCode);
+                    }
+                };
+                ScanFilter f = new ScanFilter.Builder().setManufacturerData(Proto.BLE_MFR, Proto.BLE_MAGIC).build();
+                ScanSettings set = new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build();
+                sc.startScan(Collections.singletonList(f), set, cb);
+                ScanResult r;
+                synchronized (lock) {
+                    if (found[0] == null) lock.wait(10000);
+                    r = found[0];
+                }
+                sc.stopScan(cb);
+                cb = null;
+                byte[] d = r == null || r.getScanRecord() == null ? null
+                        : r.getScanRecord().getManufacturerSpecificData(Proto.BLE_MFR);
+                int n = Proto.BLE_MAGIC.length;
+                if (d != null && d.length >= n + 2 && clients.isEmpty() && running) {
+                    int psm = ((d[n] & 0xff) << 8) | (d[n + 1] & 0xff);
+                    BluetoothSocket s = r.getDevice().createInsecureL2capChannel(psm);
+                    try {
+                        s.connect();
+                        onClient(s, s.getOutputStream(), s.getInputStream(), "bt");
+                    } catch (Exception e) {
+                        Log.i(TAG, "ble connect: " + e);
+                        closeQuietly(s);
+                    }
+                }
+            } catch (SecurityException e) {
+                btError = L.t("没有蓝牙权限", "Bluetooth permission missing");
+            } catch (Throwable e) {
+                if (running) Log.w(TAG, "ble: " + e);
+            } finally {
+                try {
+                    if (sc != null && cb != null) sc.stopScan(cb);
+                } catch (Throwable ignored) {
+                }
+            }
+            sleep(3000); // also keeps us under Android's limit of 5 scan starts per 30 s
         }
     }
 

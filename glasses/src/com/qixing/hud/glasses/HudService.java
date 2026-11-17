@@ -6,6 +6,11 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothServerSocket;
+import android.bluetooth.le.AdvertiseCallback;
+import android.bluetooth.le.AdvertiseData;
+import android.bluetooth.le.AdvertiseSettings;
+import android.bluetooth.le.BluetoothLeAdvertiser;
 import android.bluetooth.BluetoothSocket;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -115,8 +120,10 @@ public class HudService extends Service {
         } catch (Exception ignored) {
         }
         running = true;
+        KeepAliveJob.schedule(this);
         thread("tcp", this::tcpLoop);
         thread("bt", this::btLoop);
+        thread("ble", this::bleLoop);
         thread("beacon", this::beaconLoop);
         thread("watchdog", this::watchdog);
         thread("http", this::httpLoop);
@@ -206,7 +213,9 @@ public class HudService extends Service {
 
     private void saveBtAddr(Conn c) {
         try {
-            String a = ((BluetoothSocket) c.sock).getRemoteDevice().getAddress();
+            BluetoothSocket bs = (BluetoothSocket) c.sock;
+            if (bs.getConnectionType() != BluetoothSocket.TYPE_RFCOMM) return; // LE addresses are random
+            String a = bs.getRemoteDevice().getAddress();
             getSharedPreferences("p", MODE_PRIVATE).edit().putString("bt", a).apply();
             btAddrSaved = a;
         } catch (Exception ignored) {
@@ -298,6 +307,66 @@ public class HudService extends Service {
                 Log.w(TAG, "bt permission missing");
             } catch (Exception e) {
                 Log.w(TAG, "bt: " + e);
+            }
+            sleep(3000);
+        }
+    }
+
+    /**
+     * Pairing-free Bluetooth: advertise over Bluetooth LE and accept an L2CAP channel from whichever
+     * phone runs the app. Works with a phone the glasses were never paired with.
+     */
+    private void bleLoop() {
+        while (running) {
+            BluetoothServerSocket server = null;
+            BluetoothLeAdvertiser adv = null;
+            AdvertiseCallback cb = null;
+            try {
+                BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
+                adv = ad != null && ad.isEnabled() ? ad.getBluetoothLeAdvertiser() : null;
+                if (adv == null) {
+                    sleep(5000);
+                    continue;
+                }
+                server = ad.listenUsingInsecureL2capChannel();
+                int psm = server.getPsm();
+                byte[] d = new byte[Proto.BLE_MAGIC.length + 2];
+                System.arraycopy(Proto.BLE_MAGIC, 0, d, 0, Proto.BLE_MAGIC.length);
+                d[d.length - 2] = (byte) (psm >> 8);
+                d[d.length - 1] = (byte) psm;
+                AdvertiseSettings set = new AdvertiseSettings.Builder()
+                        .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+                        .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                        .setConnectable(true).setTimeout(0).build();
+                AdvertiseData data = new AdvertiseData.Builder().setIncludeDeviceName(false)
+                        .addManufacturerData(Proto.BLE_MFR, d).build();
+                cb = new AdvertiseCallback() {
+                    @Override
+                    public void onStartFailure(int errorCode) {
+                        Log.w(TAG, "ble advertise failed: " + errorCode);
+                    }
+                };
+                adv.startAdvertising(set, data, cb);
+                Log.i(TAG, "ble waiting for a phone, psm " + psm);
+                while (running) {
+                    BluetoothSocket s = server.accept();
+                    Conn c = new Conn(s, s.getInputStream(), s.getOutputStream(), "bt");
+                    if (active.compareAndSet(null, c)) runConn(c);
+                    else c.close();
+                }
+            } catch (SecurityException e) {
+                Log.w(TAG, "ble permission missing");
+            } catch (Throwable e) {
+                if (running) Log.w(TAG, "ble: " + e);
+            } finally {
+                try {
+                    if (adv != null && cb != null) adv.stopAdvertising(cb);
+                } catch (Throwable ignored) {
+                }
+                try {
+                    if (server != null) server.close();
+                } catch (Throwable ignored) {
+                }
             }
             sleep(3000);
         }

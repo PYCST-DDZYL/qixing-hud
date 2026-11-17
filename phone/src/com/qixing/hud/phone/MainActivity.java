@@ -314,7 +314,10 @@ public class MainActivity extends Activity {
         List<String> need = new ArrayList<>();
         need.add(Manifest.permission.ACCESS_FINE_LOCATION);
         need.add(Manifest.permission.ACCESS_COARSE_LOCATION);
-        if (Build.VERSION.SDK_INT >= 31) need.add(Manifest.permission.BLUETOOTH_CONNECT);
+        if (Build.VERSION.SDK_INT >= 31) {
+            need.add(Manifest.permission.BLUETOOTH_CONNECT);
+            need.add(Manifest.permission.BLUETOOTH_SCAN);
+        }
         if (Build.VERSION.SDK_INT >= 33) need.add(Manifest.permission.POST_NOTIFICATIONS);
         List<String> missing = new ArrayList<>();
         for (String p : need) if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) missing.add(p);
