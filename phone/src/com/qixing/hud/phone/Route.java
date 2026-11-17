@@ -44,6 +44,9 @@ final class Route {
         totalDist = n > 0 ? cum[n - 1] : 0;
     }
 
+    /** Within this many metres of the route counts as back on it. */
+    static final double REJOIN = 30;
+
     /** Projects a point onto the route. hint < 0 searches the whole route. */
     Match project(double la, double lo, int hint) {
         if (hint < 0) {
@@ -52,9 +55,14 @@ final class Route {
             return projectRange(la, lo, 0, size() - 1, 15);
         }
         Match m = projectRange(la, lo, Math.max(0, hint - 15), Math.min(size() - 1, hint + 400), 0);
-        if (m.off > 80) {
+        if (m.off > REJOIN) {
+            // Not on the stretch we expected: the rider may have come back to the route somewhere
+            // else (a shortcut, a detour that rejoins further on, or turning back). Look at the
+            // whole route, and move there only when the rider is clearly on it: on a loop another
+            // leg can pass close by, and a rider who is simply off route must not jump onto it.
             Match g = projectRange(la, lo, 0, size() - 1, 0);
-            if (g.off < m.off) m = g;
+            if (g.off <= REJOIN && g.off < m.off - 10) m = g;
+            else if (m.off > 80 && g.off < m.off) m = g;
         }
         return m;
     }
