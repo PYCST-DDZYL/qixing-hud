@@ -61,6 +61,9 @@ public class NavService extends Service {
     private int hintSeg = -1;
     private final Tracker tracker = new Tracker();
     private int offCount;
+    static final double AWAY_OFF = 20;
+    static final int AWAY_FIXES = 2;
+    private int awayCount; // fixes in a row moving away from the route
     private long lastRerouteAt;
     private long arrivedAt;
     private final Set<String> spoken = new HashSet<>();
@@ -221,6 +224,7 @@ public class NavService extends Service {
             rerouting = false;
             hintSeg = -1;
             offCount = 0;
+            awayCount = 0;
             offAnnounced = false;
             rerouteFailSpoken = false;
             msgUntil = 0;
@@ -411,7 +415,12 @@ public class NavService extends Service {
                 offCount = 0;
                 offAnnounced = false; // back on the route: a later detour may be announced again
             }
-            if (offCount >= 3 && !rerouting && SystemClock.elapsedRealtime() - lastRerouteAt > 12000) {
+            // A wrong turn (missed the turn, or turned one street early) shows up sooner as riding
+            // away from the route than as 3 fixes beyond the limit.
+            boolean away = acc < 60 && tracker.movingAway(r, m, la, lo, spd,
+                    loc.hasBearing() ? loc.getBearing() : Double.NaN, Math.max(AWAY_OFF, acc));
+            awayCount = away ? awayCount + 1 : 0;
+            if ((offCount >= 3 || awayCount >= AWAY_FIXES) && !rerouting && SystemClock.elapsedRealtime() - lastRerouteAt > 12000) {
                 reroute(la, lo);
             }
         }
@@ -593,6 +602,7 @@ public class NavService extends Service {
                     route = nr;
                     hintSeg = -1;
                     offCount = 0;
+                    awayCount = 0;
                     uiMsg = "";
                     if (simulating) {
                         simAlong = 0;

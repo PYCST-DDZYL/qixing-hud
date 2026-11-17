@@ -75,6 +75,18 @@ final class Tracker {
         }
     }
 
+    /**
+     * True when the rider is moving away from the route: the GPS direction of travel points away
+     * from the nearest route point (a missed turn, or a turn one street early). Uses the GPS heading,
+     * which is much steadier than the position, so a noisy fix beside the route does not count.
+     */
+    boolean movingAway(Route r, Route.Match m, double la, double lo, double spd, double gpsBrg, double minOff) {
+        if (Double.isNaN(gpsBrg) || spd < 2 || m.off < minOff) return false;
+        r.pointAt(m.along, a);
+        double away = Geo.bearing(a[0], a[1], la, lo);
+        return angle(gpsBrg, away) < 50;
+    }
+
     /** Direction of the road around a point, from 8 m before to 8 m after: steady on curves. */
     private double bearingAround(Route r, double d) {
         r.pointAt(d - 8, a);
