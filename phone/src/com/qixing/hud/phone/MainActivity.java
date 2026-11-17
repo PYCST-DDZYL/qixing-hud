@@ -5,7 +5,11 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.graphics.Typeface;
 import android.location.Location;
 import android.net.Uri;
@@ -22,10 +26,10 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
-import android.widget.ArrayAdapter;
-import android.widget.Button;
+import android.widget.BaseAdapter;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
@@ -47,10 +51,12 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
     private EditText query;
     private ListView list;
-    private ArrayAdapter<String> adapter;
+    private BaseAdapter adapter;
+    private Location nearLoc;
     private final List<Search.Place> places = new ArrayList<>();
-    private TextView status, info, navBig, navSmall;
-    private Button startBtn, simBtn, stopBtn;
+    private TextView gpsText, glText, info, navBig, navSmall;
+    private GradientDrawable gpsDot, glDot;
+    private TextView startBtn, simBtn, stopBtn;
     private CheckBox voice;
     private LinearLayout navPanel;
     private Route pending;
@@ -82,8 +88,20 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ UI
 
-    private int dp(int v) {
+    // Colours shared by the whole screen: dark surfaces with the HUD's green as the accent.
+    private static final int BG = 0xFF0D1012, SURFACE = 0xFF171C20, LINE = 0xFF2B343A,
+            GREEN = 0xFF3DDC84, ON_GREEN = 0xFF06210F, TEXT = 0xFFF2F5F6, TEXT2 = 0xFF9AA5AA,
+            AMBER = 0xFFFFC857, RED = 0xFFFF6B6B, GREY = 0xFF5A656B;
+
+    private int dp(float v) {
         return Math.round(v * getResources().getDisplayMetrics().density);
+    }
+
+    private GradientDrawable shape(int color, float radiusDp) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(dp(radiusDp));
+        return g;
     }
 
     private TextView text(float sp, int color, boolean bold) {
@@ -94,65 +112,149 @@ public class MainActivity extends Activity {
         return t;
     }
 
-    private Button button(String label, View.OnClickListener l) {
-        Button btn = new Button(this);
-        btn.setText(label);
-        btn.setAllCaps(false);
-        btn.setOnClickListener(l);
-        return btn;
+    /** A rounded button: filled when stroke is 0, outlined otherwise. */
+    private TextView button(String label, int fill, int textColor, int stroke, int minHeightDp, View.OnClickListener l) {
+        TextView b = text(15, textColor, true);
+        b.setText(label);
+        b.setGravity(Gravity.CENTER);
+        b.setSingleLine(true);
+        GradientDrawable g = shape(fill, 14);
+        if (stroke != 0) g.setStroke(dp(1.5f), stroke);
+        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x40FFFFFF), g, null));
+        b.setPadding(dp(16), 0, dp(16), 0);
+        b.setMinHeight(dp(minHeightDp));
+        b.setClickable(true);
+        b.setFocusable(true);
+        b.setOnClickListener(l);
+        return b;
+    }
+
+    private static void enable(View v, boolean on) {
+        v.setEnabled(on);
+        v.setAlpha(on ? 1f : 0.38f);
+    }
+
+    private LinearLayout card(int color) {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setBackground(shape(color, 18));
+        c.setPadding(dp(14), dp(12), dp(14), dp(12));
+        return c;
+    }
+
+    private LinearLayout.LayoutParams lp(int w, int h, float weight, int topDp) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h, weight);
+        p.topMargin = dp(topDp);
+        return p;
+    }
+
+    /** "● GPS   fixed, accuracy 5 m": a coloured dot, a fixed-width label and the value. */
+    private LinearLayout statusRow(GradientDrawable dot, String label, TextView value) {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        dot.setShape(GradientDrawable.OVAL);
+        dot.setColor(GREY);
+        View d = new View(this);
+        d.setBackground(dot);
+        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(dp(9), dp(9));
+        dl.topMargin = dp(6);
+        dl.rightMargin = dp(10);
+        r.addView(d, dl);
+        TextView lab = text(14, TEXT2, false);
+        lab.setText(label);
+        r.addView(lab, new LinearLayout.LayoutParams(dp(L.en ? 62 : 44), -2));
+        r.addView(value, new LinearLayout.LayoutParams(0, -2, 1));
+        return r;
+    }
+
+    private CheckBox option(String label, boolean on, android.widget.CompoundButton.OnCheckedChangeListener l) {
+        CheckBox c = new CheckBox(this);
+        c.setText(label);
+        c.setTextColor(TEXT);
+        c.setTextSize(14);
+        c.setButtonTintList(ColorStateList.valueOf(GREEN));
+        c.setChecked(on);
+        c.setOnCheckedChangeListener(l);
+        return c;
     }
 
     private void buildUi() {
+        getWindow().setStatusBarColor(BG);
+        getWindow().setNavigationBarColor(BG);
+        SharedPreferences prefs = getSharedPreferences("p", MODE_PRIVATE);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(14), dp(14), dp(14), dp(8));
-        root.setBackgroundColor(Color.rgb(16, 18, 20));
+        root.setPadding(dp(16), dp(14), dp(16), dp(8));
+        root.setBackgroundColor(BG);
         // Keep focus off the search box so the keyboard does not cover the results on launch.
         root.setFocusableInTouchMode(true);
         root.requestFocus();
 
+        // ---- header
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = text(22, Color.rgb(80, 230, 120), true);
+        LinearLayout titles = new LinearLayout(this);
+        titles.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text(26, TEXT, true);
         title.setText(L.t("骑行导航", "Bike Nav HUD"));
-        top.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        titles.addView(title);
+        TextView sub = text(12, TEXT2, false);
+        sub.setText(L.t("完全免费 · 不用账号 · 眼镜显示转向", "Free · no account · turns on your glasses"));
+        titles.addView(sub);
+        top.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
         // Shows the language you would switch to.
-        top.addView(button(L.en ? "中文" : "English", v -> {
+        top.addView(button(L.en ? "中文" : "English", 0, GREEN, LINE, 36, v -> {
             String to = L.en ? "zh" : "en";
-            getSharedPreferences("p", MODE_PRIVATE).edit().putString("lang", to).apply();
+            prefs.edit().putString("lang", to).apply();
             L.apply(to);
             if (NavService.I != null) NavService.I.setLang(to);
             buildUi(); // same activity, new texts; the planned route and navigation are kept
         }));
         root.addView(top, new LinearLayout.LayoutParams(-1, -2));
-        TextView sub = text(13, Color.rgb(150, 160, 160), false);
-        sub.setText(L.t("完全免费 · 不需要任何账号或密钥 · 眼镜显示转向", "Free · no account or API key · turn-by-turn on your glasses"));
-        root.addView(sub);
 
-        status = text(14, Color.rgb(220, 220, 220), false);
-        status.setPadding(0, dp(8), 0, dp(6));
-        root.addView(status);
+        // ---- GPS and glasses status
+        LinearLayout st = card(SURFACE);
+        gpsDot = new GradientDrawable();
+        glDot = new GradientDrawable();
+        gpsText = text(14, TEXT, false);
+        glText = text(14, TEXT, false);
+        st.addView(statusRow(gpsDot, "GPS", gpsText));
+        st.addView(statusRow(glDot, L.t("眼镜", "Glasses"), glText), lp(-1, -2, 0, 6));
+        root.addView(st, lp(-1, -2, 0, 12));
 
+        // ---- current turn (only while navigating)
         navPanel = new LinearLayout(this);
         navPanel.setOrientation(LinearLayout.VERTICAL);
-        navPanel.setPadding(dp(12), dp(10), dp(12), dp(10));
-        navPanel.setBackgroundColor(Color.rgb(20, 60, 36));
-        navBig = text(26, Color.WHITE, true);
-        navSmall = text(15, Color.rgb(210, 240, 220), false);
+        GradientDrawable ng = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{0xFF1F8A4C, 0xFF0F5132});
+        ng.setCornerRadius(dp(18));
+        navPanel.setBackground(ng);
+        navPanel.setPadding(dp(16), dp(14), dp(16), dp(14));
+        navBig = text(28, Color.WHITE, true);
+        navSmall = text(15, 0xFFD8F5E3, false);
+        navSmall.setLineSpacing(dp(2), 1f);
         navPanel.addView(navBig);
-        navPanel.addView(navSmall);
+        navPanel.addView(navSmall, lp(-1, -2, 0, 4));
         navPanel.setVisibility(View.GONE);
-        root.addView(navPanel, new LinearLayout.LayoutParams(-1, -2));
+        root.addView(navPanel, lp(-1, -2, 0, 10));
 
+        // ---- search
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
+        GradientDrawable sg = shape(SURFACE, 16);
+        sg.setStroke(dp(1), LINE);
+        row.setBackground(sg);
+        row.setPadding(dp(14), dp(4), dp(4), dp(4));
         query = new EditText(this);
-        query.setHint(L.t("搜索目的地（地名、地址或 纬度,经度）", "Search a place, address or lat,lon"));
+        query.setHint(L.t("搜索目的地、地址或 纬度,经度", "Search a place, address or lat,lon"));
         query.setSingleLine(true);
-        query.setTextColor(Color.WHITE);
-        query.setHintTextColor(Color.rgb(120, 130, 130));
+        query.setTextSize(16);
+        query.setTextColor(TEXT);
+        query.setHintTextColor(GREY);
+        query.setBackground(null);
+        query.setPadding(0, dp(8), dp(8), dp(8));
         query.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
         query.setOnEditorActionListener((v, id, ev) -> {
             if (id == EditorInfo.IME_ACTION_SEARCH
@@ -163,145 +265,201 @@ public class MainActivity extends Activity {
             return false;
         });
         row.addView(query, new LinearLayout.LayoutParams(0, -2, 1));
-        row.addView(button(L.t("搜索", "Search"), v -> doSearch()));
-        root.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        row.addView(button(L.t("搜索", "Search"), GREEN, ON_GREEN, 0, 40, v -> doSearch()));
+        root.addView(row, lp(-1, -2, 0, 12));
 
+        // ---- hint / planned route
+        info = text(14, TEXT2, false);
+        info.setLineSpacing(dp(2), 1f);
+        info.setPadding(dp(4), 0, dp(4), 0);
+        root.addView(info, lp(-1, -2, 0, 10));
+
+        // ---- results and recent places
         list = new ListView(this);
-        adapter = new ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, new ArrayList<>()) {
+        list.setDivider(null);
+        list.setSelector(new ColorDrawable(0));
+        list.setVerticalScrollBarEnabled(false);
+        adapter = new BaseAdapter() {
+            @Override
+            public int getCount() {
+                return places.size();
+            }
+
+            @Override
+            public Object getItem(int pos) {
+                return places.get(pos);
+            }
+
+            @Override
+            public long getItemId(int pos) {
+                return pos;
+            }
+
             @Override
             public View getView(int pos, View cv, ViewGroup parent) {
-                TextView t = (TextView) super.getView(pos, cv, parent);
-                t.setTextColor(Color.rgb(230, 230, 230));
-                t.setTextSize(15);
-                return t;
+                return placeRow(places.get(pos));
             }
         };
         list.setAdapter(adapter);
         list.setOnItemClickListener((p, v, pos, id) -> pick(places.get(pos)));
-        root.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+        root.addView(list, lp(-1, 0, 1, 6));
 
-        info = text(15, Color.rgb(255, 220, 120), false);
-        info.setPadding(0, dp(6), 0, dp(4));
-        root.addView(info);
-
+        // ---- actions
         LinearLayout btns = new LinearLayout(this);
         btns.setOrientation(LinearLayout.HORIZONTAL);
-        startBtn = button(L.t("开始导航", "Start"), v -> start(false));
-        simBtn = button(L.t("模拟骑行", "Simulate"), v -> start(true));
-        stopBtn = button(L.t("结束导航", "Stop"), v -> {
+        startBtn = button(L.t("开始导航", "Start"), GREEN, ON_GREEN, 0, 50, v -> start(false));
+        simBtn = button(L.t("模拟骑行", "Simulate"), 0, GREEN, GREEN, 50, v -> start(true));
+        stopBtn = button(L.t("结束导航", "Stop navigation"), 0, RED, RED, 50, v -> {
             if (NavService.I != null) NavService.I.stopNav();
         });
-        btns.addView(startBtn, new LinearLayout.LayoutParams(0, -2, 1));
-        btns.addView(simBtn, new LinearLayout.LayoutParams(0, -2, 1));
+        btns.addView(startBtn, new LinearLayout.LayoutParams(0, -2, 1.4f));
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(0, -2, 1);
+        sl.leftMargin = dp(10);
+        btns.addView(simBtn, sl);
         btns.addView(stopBtn, new LinearLayout.LayoutParams(0, -2, 1));
-        root.addView(btns, new LinearLayout.LayoutParams(-1, -2));
+        root.addView(btns, lp(-1, -2, 0, 8));
 
-        LinearLayout bottom = new LinearLayout(this);
-        bottom.setOrientation(LinearLayout.HORIZONTAL);
-        bottom.setGravity(Gravity.CENTER_VERTICAL);
-        voice = new CheckBox(this);
-        voice.setText(L.t("语音播报", "Voice prompts"));
-        voice.setTextColor(Color.rgb(220, 220, 220));
-        voice.setChecked(getSharedPreferences("p", MODE_PRIVATE).getBoolean("voice", true));
-        voice.setOnCheckedChangeListener((c, on) -> {
-            getSharedPreferences("p", MODE_PRIVATE).edit().putBoolean("voice", on).apply();
+        // ---- options
+        voice = option(L.t("语音播报", "Voice prompts"), prefs.getBoolean("voice", true), (c, on) -> {
+            prefs.edit().putBoolean("voice", on).apply();
             if (NavService.I != null) NavService.I.setVoice(on);
         });
-        bottom.addView(voice, new LinearLayout.LayoutParams(0, -2, 1));
-        bottom.addView(button(L.t("退出", "Quit"), v -> {
+        CheckBox onGlasses = option(L.t("语音在眼镜播放", "Voice on glasses"), prefs.getBoolean("voiceGlasses", true), (c, on) -> {
+            prefs.edit().putBoolean("voiceGlasses", on).apply();
+            if (NavService.I != null) NavService.I.setVoiceOnGlasses(on);
+        });
+        CheckBox eco = option(L.t("眼镜省电（路口前亮屏）", "Glasses power saving"), prefs.getBoolean("eco", false), (c, on) -> {
+            prefs.edit().putBoolean("eco", on).apply();
+            if (NavService.I != null) NavService.I.setEcoScreen(on);
+        });
+        LinearLayout o1 = new LinearLayout(this);
+        o1.addView(voice, new LinearLayout.LayoutParams(0, -2, 1));
+        o1.addView(onGlasses, new LinearLayout.LayoutParams(0, -2, 1));
+        root.addView(o1, lp(-1, -2, 0, 6));
+        LinearLayout o2 = new LinearLayout(this);
+        o2.setGravity(Gravity.CENTER_VERTICAL);
+        o2.addView(eco, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView quit = text(14, TEXT2, false);
+        quit.setText(L.t("退出", "Quit"));
+        quit.setPadding(dp(14), dp(8), dp(6), dp(8));
+        quit.setOnClickListener(v -> {
             if (NavService.I != null) NavService.I.stopNav();
             ui.postDelayed(() -> {
                 stopService(new Intent(this, NavService.class));
                 finishAndRemoveTask();
             }, 300);
-        }));
-        root.addView(bottom, new LinearLayout.LayoutParams(-1, -2));
-
-        LinearLayout opts = new LinearLayout(this);
-        opts.setOrientation(LinearLayout.HORIZONTAL);
-        SharedPreferences prefs = getSharedPreferences("p", MODE_PRIVATE);
-        CheckBox onGlasses = new CheckBox(this);
-        onGlasses.setText(L.t("语音在眼镜播放", "Voice on glasses"));
-        onGlasses.setTextColor(Color.rgb(220, 220, 220));
-        onGlasses.setChecked(prefs.getBoolean("voiceGlasses", true));
-        onGlasses.setOnCheckedChangeListener((c, on) -> {
-            prefs.edit().putBoolean("voiceGlasses", on).apply();
-            if (NavService.I != null) NavService.I.setVoiceOnGlasses(on);
         });
-        CheckBox eco = new CheckBox(this);
-        eco.setText(L.t("眼镜省电(路口前亮屏)", "Glasses power saving"));
-        eco.setTextColor(Color.rgb(220, 220, 220));
-        eco.setChecked(prefs.getBoolean("eco", false));
-        eco.setOnCheckedChangeListener((c, on) -> {
-            prefs.edit().putBoolean("eco", on).apply();
-            if (NavService.I != null) NavService.I.setEcoScreen(on);
-        });
-        opts.addView(onGlasses, new LinearLayout.LayoutParams(0, -2, 1));
-        opts.addView(eco, new LinearLayout.LayoutParams(0, -2, 1));
-        root.addView(opts, new LinearLayout.LayoutParams(-1, -2));
+        o2.addView(quit);
+        root.addView(o2, new LinearLayout.LayoutParams(-1, -2));
 
-        TextView credit = text(11, Color.rgb(110, 120, 120), false);
-        credit.setText(L.t("地图数据 © OpenStreetMap 贡献者 · 路线 OSRM（FOSSGIS 免费服务）· 搜索 Photon / Nominatim",
+        TextView credit = text(10, GREY, false);
+        credit.setText(L.t("地图数据 © OpenStreetMap 贡献者 · 路线 OSRM（FOSSGIS）· 搜索 Photon / Nominatim",
                 "Map data © OpenStreetMap contributors · Routing: OSRM (FOSSGIS) · Search: Photon / Nominatim"));
-        root.addView(credit);
+        root.addView(credit, lp(-1, -2, 0, 2));
 
         setContentView(root);
         showRecents();
         setButtons();
+        refreshStatus();
+    }
+
+    /** One search result or recent place: name and address on the left, distance on the right. */
+    private View placeRow(Search.Place p) {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.HORIZONTAL);
+        c.setGravity(Gravity.CENTER_VERTICAL);
+        GradientDrawable g = shape(p.resume ? 0xFF12301F : SURFACE, 14);
+        if (p.resume) g.setStroke(dp(1), GREEN);
+        c.setBackground(g);
+        c.setPadding(dp(14), dp(11), dp(14), dp(11));
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        TextView name = text(16, p.resume ? GREEN : TEXT, true);
+        name.setText((p.resume ? L.t("↻ 继续上次导航：", "↻ Continue last ride: ") : "") + p.name);
+        name.setMaxLines(2);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        left.addView(name);
+        if (!TextUtils.isEmpty(p.addr)) {
+            TextView addr = text(13, TEXT2, false);
+            addr.setText(p.addr);
+            addr.setMaxLines(2);
+            addr.setEllipsize(TextUtils.TruncateAt.END);
+            left.addView(addr, lp(-1, -2, 0, 2));
+        }
+        c.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
+        if (nearLoc != null) {
+            TextView d = text(14, GREEN, true);
+            d.setText(Geo.fmtDist(Geo.dist(nearLoc.getLatitude(), nearLoc.getLongitude(), p.lat, p.lon)));
+            d.setPadding(dp(10), 0, 0, 0);
+            c.addView(d);
+        }
+        // The list has no dividers; this wrapper leaves a gap under each row.
+        FrameLayout wrap = new FrameLayout(this);
+        wrap.setPadding(0, 0, 0, dp(8));
+        wrap.addView(c);
+        return wrap;
     }
 
     private void setButtons() {
         NavService s = NavService.I;
         boolean nav = s != null && s.navigating;
-        startBtn.setEnabled(!nav && pending != null);
-        simBtn.setEnabled(!nav && pending != null);
-        stopBtn.setEnabled(nav);
+        startBtn.setVisibility(nav ? View.GONE : View.VISIBLE);
+        simBtn.setVisibility(nav ? View.GONE : View.VISIBLE);
+        stopBtn.setVisibility(nav ? View.VISIBLE : View.GONE);
+        enable(startBtn, pending != null);
+        enable(simBtn, pending != null);
+    }
+
+    private void refreshStatus() {
+        NavService s = NavService.I;
+        if (s == null) {
+            gpsDot.setColor(GREY);
+            glDot.setColor(GREY);
+            gpsText.setText(serviceStarted ? L.t("正在启动…", "Starting…")
+                    : L.t("需要定位权限才能导航，请在弹窗中允许", "Location permission is needed. Please allow it in the prompt."));
+            glText.setText("—");
+            navPanel.setVisibility(View.GONE);
+            return;
+        }
+        Location l = s.last;
+        if (s.gpsGood() && l != null) {
+            gpsDot.setColor(GREEN);
+            gpsText.setText(L.t("已定位 · 精度约 ", "Fixed · accuracy about ") + Math.round(l.getAccuracy()) + L.t(" 米", " m")
+                    + (l.hasSpeed() ? " · " + Math.round(l.getSpeed() * 3.6) + " km/h" : ""));
+        } else {
+            gpsDot.setColor(AMBER);
+            gpsText.setText(l != null ? L.t("正在定位…只有大致位置，到室外会更准", "Locating… rough position only; go outdoors for a better fix")
+                    : L.t("正在定位…请到室外开阔处", "Locating… please go outdoors"));
+        }
+        int w = s.link.count("wifi"), bt = s.link.count("bt");
+        if (w + bt == 0) {
+            glDot.setColor(GREY);
+            glText.setText(L.t("未连接 · 打开蓝牙，或让眼镜连上手机热点", "Not connected · turn on Bluetooth, or join the phone's hotspot from the glasses")
+                    + (s.link.btError.isEmpty() ? "" : L.t("\n蓝牙：", "\nBluetooth: ") + s.link.btError));
+        } else {
+            glDot.setColor(GREEN);
+            glText.setText(L.t("已连接", "Connected") + (w > 0 ? L.t(" · 热点/WiFi", " · hotspot/Wi-Fi") : "")
+                    + (bt > 0 ? L.t(" · 蓝牙", " · Bluetooth") : ""));
+        }
+        if (s.navigating && s.route != null) {
+            navPanel.setVisibility(View.VISIBLE);
+            navBig.setText(s.arrived ? L.t("已到达目的地", "You have arrived") : Geo.fmtDist(s.uiMdist) + "  " + s.uiAction);
+            String road = s.uiRoad;
+            String msg = s.uiMsg;
+            navSmall.setText((TextUtils.isEmpty(road) ? "" : road + "\n")
+                    + L.t("剩余 ", "Remaining ") + Geo.fmtDist(s.uiRem) + L.t(" · 预计 ", " · ETA ")
+                    + new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(s.uiEta)) + L.t(" 到达", "")
+                    + (s.simulating ? L.t(" · 模拟中", " · simulating") : "")
+                    + (TextUtils.isEmpty(msg) ? "" : "\n" + msg));
+        } else {
+            navPanel.setVisibility(View.GONE);
+        }
     }
 
     private final Runnable refresh = new Runnable() {
         @Override
         public void run() {
-            NavService s = NavService.I;
-            StringBuilder sb = new StringBuilder();
-            if (s == null) {
-                sb.append(serviceStarted ? L.t("正在启动…", "Starting…")
-                        : L.t("需要定位权限才能导航，请在弹窗中允许", "Location permission is needed. Please allow it in the prompt."));
-            } else {
-                Location l = s.last;
-                if (s.gpsGood() && l != null) {
-                    sb.append(L.t("GPS：已定位，精度约 ", "GPS: fixed, accuracy about ")).append(Math.round(l.getAccuracy())).append(L.t(" 米", " m"));
-                    if (l.hasSpeed()) sb.append(" · ").append(Math.round(l.getSpeed() * 3.6)).append(" km/h");
-                } else if (l != null) {
-                    sb.append(L.t("GPS：正在定位…（已有大致位置，到室外会更准）", "GPS: locating… (rough position only; go outdoors for a better fix)"));
-                } else {
-                    sb.append(L.t("GPS：正在定位…请到室外开阔处", "GPS: locating… please go outdoors"));
-                }
-                int w = s.link.count("wifi"), bt = s.link.count("bt");
-                sb.append(L.t("\n眼镜：", "\nGlasses: "));
-                if (w + bt == 0) {
-                    sb.append(L.t("未连接（手机开热点并让眼镜连上，或打开蓝牙）", "not connected (turn on the hotspot and join it from the glasses, or turn on Bluetooth)"));
-                    if (!s.link.btError.isEmpty()) sb.append(L.t(" · 蓝牙：", " · Bluetooth: ")).append(s.link.btError);
-                } else {
-                    sb.append(L.t("已连接", "connected"));
-                    if (w > 0) sb.append(L.t(" · 热点/WiFi", " · hotspot/Wi-Fi"));
-                    if (bt > 0) sb.append(L.t(" · 蓝牙", " · Bluetooth"));
-                }
-                if (s.navigating && s.route != null) {
-                    navPanel.setVisibility(View.VISIBLE);
-                    String act = s.uiAction;
-                    navBig.setText(s.arrived ? L.t("已到达目的地", "You have arrived") : Geo.fmtDist(s.uiMdist) + "  " + act);
-                    String road = s.uiRoad;
-                    String msg = s.uiMsg;
-                    navSmall.setText((TextUtils.isEmpty(road) ? "" : road + "\n")
-                            + L.t("剩余 ", "Remaining ") + Geo.fmtDist(s.uiRem) + L.t(" · 预计 ", " · ETA ")
-                            + new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(s.uiEta)) + L.t(" 到达", "")
-                            + (s.simulating ? L.t(" · 模拟中", " · simulating") : "")
-                            + (TextUtils.isEmpty(msg) ? "" : "\n" + msg));
-                } else {
-                    navPanel.setVisibility(View.GONE);
-                }
-            }
-            status.setText(sb);
+            refreshStatus();
             setButtons();
             maybeRunTest();
             ui.postDelayed(this, 1000);
@@ -396,11 +554,7 @@ public class MainActivity extends Activity {
     private void showPlaces(List<Search.Place> r, Location near) {
         places.clear();
         places.addAll(r);
-        adapter.clear();
-        for (Search.Place p : r) {
-            String d = near == null ? "" : "  ·  " + Geo.fmtDist(Geo.dist(near.getLatitude(), near.getLongitude(), p.lat, p.lon));
-            adapter.add((p.resume ? L.t("↻ 继续上次导航：", "↻ Continue last ride: ") : "") + p.name + d + (TextUtils.isEmpty(p.addr) ? "" : "\n" + p.addr));
-        }
+        nearLoc = near;
         adapter.notifyDataSetChanged();
     }
 
@@ -544,6 +698,12 @@ public class MainActivity extends Activity {
             return;
         }
         testHandled = true;
+        String search = it.getStringExtra("search"); // --es search "text": runs a search without the keyboard
+        if (search != null) {
+            query.setText(search);
+            doSearch();
+            return;
+        }
         if (from == null || to == null) return;
         try {
             String[] a = from.split(","), c = to.split(",");
