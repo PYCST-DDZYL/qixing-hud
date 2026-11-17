@@ -393,6 +393,17 @@ public class MainActivity extends Activity {
             d.setPadding(dp(10), 0, 0, 0);
             c.addView(d);
         }
+        if (!p.resume) {
+            // Star: add to / remove from the saved places, which stay at the top of the list.
+            TextView star = text(24, p.fav ? AMBER : GREY, false);
+            star.setText(p.fav ? "★" : "☆");
+            star.setGravity(Gravity.CENTER);
+            star.setPadding(dp(12), dp(4), dp(2), dp(4));
+            star.setFocusable(false);
+            star.setContentDescription(p.fav ? L.t("取消收藏", "Remove from saved places") : L.t("收藏", "Save this place"));
+            star.setOnClickListener(v -> toggleFav(p));
+            c.addView(star);
+        }
         // The list has no dividers; this wrapper leaves a gap under each row.
         FrameLayout wrap = new FrameLayout(this);
         wrap.setPadding(0, 0, 0, dp(8));
@@ -459,6 +470,11 @@ public class MainActivity extends Activity {
     private final Runnable refresh = new Runnable() {
         @Override
         public void run() {
+            // The list is often built before the first fix arrives: add the distances once it does.
+            if (nearLoc == null && NavService.I != null && NavService.I.last != null && !places.isEmpty()) {
+                nearLoc = NavService.I.last;
+                adapter.notifyDataSetChanged();
+            }
             refreshStatus();
             setButtons();
             maybeRunTest();
@@ -552,6 +568,12 @@ public class MainActivity extends Activity {
     }
 
     private void showPlaces(List<Search.Place> r, Location near) {
+        List<Search.Place> favs = loadFavs();
+        for (Search.Place p : r) {
+            p.fav = false;
+            if (p.resume) continue;
+            for (Search.Place f : favs) if (samePlace(f, p)) p.fav = true;
+        }
         places.clear();
         places.addAll(r);
         nearLoc = near;
@@ -577,16 +599,72 @@ public class MainActivity extends Activity {
             }
         } catch (Exception ignored) {
         }
+        // Saved places first, then recent ones that are not saved already.
+        List<Search.Place> favs = loadFavs();
+        r.addAll(favs);
         try {
             JSONArray a = new JSONArray(sp.getString("recent", "[]"));
-            for (int i = 0; i < a.length(); i++) r.add(Search.Place.fromJson(a.getJSONObject(i)));
+            for (int i = 0; i < a.length(); i++) {
+                Search.Place p = Search.Place.fromJson(a.getJSONObject(i));
+                boolean saved = false;
+                for (Search.Place f : favs) if (samePlace(f, p)) saved = true;
+                if (!saved) r.add(p);
+            }
         } catch (Exception ignored) {
         }
         showPlaces(r, s == null ? null : s.last);
         if (info == null) return;
         if (resume != null) info.setText(L.t("上次导航没有结束。点第一行“继续上次导航”可以接着骑", "The last ride did not finish. Tap the first row to continue it."));
-        else if (r.isEmpty()) info.setText(L.t("输入目的地后点“搜索”", "Type a destination and tap Search"));
-        else info.setText(L.t("最近去过的地方（点一下规划路线）", "Recent places (tap to plan a route)"));
+        else if (r.isEmpty()) info.setText(L.t("输入目的地后点“搜索”。点地点右边的 ☆ 可以收藏为常去地点", "Type a destination and tap Search. Tap ☆ next to a place to save it."));
+        else if (favs.isEmpty()) info.setText(L.t("最近去过的地方 · 点 ☆ 收藏为常去地点", "Recent places · tap ☆ to save a place"));
+        else info.setText(L.t("★ 常去地点在最上面 · 点一下规划路线", "★ Saved places are on top · tap one to plan a route"));
+    }
+
+    /**
+     * Same saved place: same name and practically the same spot. Distance alone is not enough:
+     * shops in one building share an address and sit metres apart.
+     */
+    private static boolean samePlace(Search.Place a, Search.Place b) {
+        return Geo.dist(a.lat, a.lon, b.lat, b.lon) <= 5 && TextUtils.equals(a.name, b.name);
+    }
+
+    /** Saved ("favourite") places, newest first, at most 30. */
+    private List<Search.Place> loadFavs() {
+        List<Search.Place> r = new ArrayList<>();
+        try {
+            JSONArray a = new JSONArray(getSharedPreferences("p", MODE_PRIVATE).getString("fav", "[]"));
+            for (int i = 0; i < a.length(); i++) {
+                Search.Place p = Search.Place.fromJson(a.getJSONObject(i));
+                p.fav = true;
+                r.add(p);
+            }
+        } catch (Exception ignored) {
+        }
+        return r;
+    }
+
+    private void toggleFav(Search.Place p) {
+        try {
+            List<Search.Place> favs = loadFavs();
+            JSONArray a = new JSONArray();
+            boolean removed = false;
+            for (Search.Place f : favs) {
+                if (samePlace(f, p)) removed = true;
+                else a.put(f.toJson());
+            }
+            if (!removed) {
+                JSONArray b = new JSONArray();
+                b.put(p.toJson());
+                for (int i = 0; i < a.length() && b.length() < 30; i++) b.put(a.get(i));
+                a = b;
+            }
+            getSharedPreferences("p", MODE_PRIVATE).edit().putString("fav", a.toString()).apply();
+            Toast.makeText(this, removed ? L.t("已从常去地点移除：", "Removed from saved places: ") + p.name
+                    : L.t("已收藏为常去地点：", "Saved: ") + p.name, Toast.LENGTH_SHORT).show();
+            if (query.getText().toString().trim().isEmpty()) showRecents();
+            else showPlaces(new ArrayList<>(places), nearLoc);
+        } catch (Exception ignored) {
+        }
     }
 
     private void saveRecent(Search.Place p) {

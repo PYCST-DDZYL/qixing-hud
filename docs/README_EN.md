@@ -22,6 +22,7 @@ Free turn-by-turn cycling navigation for **Rokid AR glasses**. Your Android phon
   - Bluetooth LE, **no pairing needed**: it links as soon as Bluetooth is on;
   - classic Bluetooth, when the glasses are paired with the phone.
 - After the glasses reboot, the HUD app starts again by itself within about a minute and reconnects.
+- Saved places: tap ☆ next to a place to save it, tap ★ to remove it. Saved places stay at the top of the list.
 - Next turn on the phone's notification and lock screen.
 - "Continue last ride": if Android kills the app mid-ride, one tap resumes to the same destination. Without a network it uses the route saved when the ride started.
 - "Simulate": preview the whole route on the glasses at home.

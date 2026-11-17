@@ -18,6 +18,7 @@ final class Search {
         String name, addr;
         double lat, lon;
         boolean resume; // "continue last ride" entry; not saved
+        boolean fav;    // in the saved places list; worked out when shown, not saved
 
         JSONObject toJson() {
             JSONObject o = new JSONObject();
