@@ -40,7 +40,7 @@ function Build-App($name, $targetSdk, $assetsDir) {
 
     $linkArgs = @("link", "-o", "$work\base.apk", "-I", $jar, "--manifest", "$src\AndroidManifest.xml",
         "--min-sdk-version", "28", "--target-sdk-version", "$targetSdk",
-        "--version-code", "7", "--version-name", "1.6")
+        "--version-code", "8", "--version-name", "1.7")
     if ($assetsDir) { $linkArgs += @("-A", $assetsDir) }
     & "$bt\aapt2.exe" @linkArgs
     if ($LASTEXITCODE -ne 0) { throw "aapt2 failed for $name" }

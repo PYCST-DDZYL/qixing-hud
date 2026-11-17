@@ -25,7 +25,7 @@ Free turn-by-turn cycling navigation for **Rokid AR glasses**. Your Android phon
 - Saved places: tap ☆ next to a place to save it, tap ★ to remove it. Saved places stay at the top of the list.
 - Next turn on the phone's notification and lock screen.
 - "Continue last ride": if Android kills the app mid-ride, one tap resumes to the same destination. Without a network it uses the route saved when the ride started.
-- "Simulate": preview the whole route on the glasses at home.
+- One tap on a place starts the ride and the glasses follow. "Simulation" in Settings previews the whole route on the glasses at home.
 
 ## Language
 
@@ -56,7 +56,7 @@ Download both APKs from the [latest release](https://github.com/PYCST-DDZYL/qixi
    - turn on Bluetooth on the phone (no pairing needed; the two apps find each other).
 
    The phone app shows "Glasses: connected" when it works.
-5. Search for a destination (or type `lat,lon`), tap a result, then tap **Start**.
+5. Search for a destination (or type `lat,lon`), and tap a place: the ride starts right away.
 
 On the glasses: tap the touchpad to zoom the mini map; Back sends the HUD to the background without stopping navigation.
 

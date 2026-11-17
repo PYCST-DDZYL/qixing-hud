@@ -54,9 +54,11 @@ public class MainActivity extends Activity {
     private BaseAdapter adapter;
     private Location nearLoc;
     private final List<Search.Place> places = new ArrayList<>();
-    private TextView gpsText, glText, info, navBig, navSmall;
-    private GradientDrawable gpsDot, glDot;
-    private TextView startBtn, simBtn, stopBtn;
+    private TextView statusText, info, navBig, navSmall, stopBtn, settingsBtn;
+    private GradientDrawable statusDot;
+    private LinearLayout searchRow, settingsPanel;
+    private View navSpacer, settingsSpacer;
+    private boolean settingsOpen, simMode, wasNav;
     private CheckBox voice;
     private LinearLayout navPanel;
     private Route pending;
@@ -191,70 +193,79 @@ public class MainActivity extends Activity {
         root.setFocusableInTouchMode(true);
         root.requestFocus();
 
-        // ---- header
+        // ---- header: title and the settings button
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout titles = new LinearLayout(this);
-        titles.setOrientation(LinearLayout.VERTICAL);
         TextView title = text(26, TEXT, true);
         title.setText(L.t("骑行导航", "Bike Nav HUD"));
-        titles.addView(title);
-        TextView sub = text(12, TEXT2, false);
-        sub.setText(L.t("完全免费 · 不用账号 · 眼镜显示转向", "Free · no account · turns on your glasses"));
-        titles.addView(sub);
-        top.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
-        // Shows the language you would switch to.
-        top.addView(button(L.en ? "中文" : "English", 0, GREEN, LINE, 36, v -> {
-            String to = L.en ? "zh" : "en";
-            prefs.edit().putString("lang", to).apply();
-            L.apply(to);
-            if (NavService.I != null) NavService.I.setLang(to);
-            buildUi(); // same activity, new texts; the planned route and navigation are kept
-        }));
+        top.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        settingsBtn = button(settingsOpen ? L.t("完成", "Done") : L.t("设置", "Settings"), 0, GREEN, LINE, 36, v -> {
+            settingsOpen = !settingsOpen;
+            settingsBtn.setText(settingsOpen ? L.t("完成", "Done") : L.t("设置", "Settings"));
+            setButtons();
+        });
+        top.addView(settingsBtn);
         root.addView(top, new LinearLayout.LayoutParams(-1, -2));
 
-        // ---- GPS and glasses status
-        LinearLayout st = card(SURFACE);
-        gpsDot = new GradientDrawable();
-        glDot = new GradientDrawable();
-        gpsText = text(14, TEXT, false);
-        glText = text(14, TEXT, false);
-        st.addView(statusRow(gpsDot, "GPS", gpsText));
-        st.addView(statusRow(glDot, L.t("眼镜", "Glasses"), glText), lp(-1, -2, 0, 6));
+        // ---- one status line: glasses and GPS
+        LinearLayout st = new LinearLayout(this);
+        st.setOrientation(LinearLayout.HORIZONTAL);
+        st.setGravity(Gravity.CENTER_VERTICAL);
+        st.setBackground(shape(SURFACE, 14));
+        st.setPadding(dp(14), dp(10), dp(14), dp(10));
+        statusDot = new GradientDrawable();
+        statusDot.setShape(GradientDrawable.OVAL);
+        statusDot.setColor(GREY);
+        View dot = new View(this);
+        dot.setBackground(statusDot);
+        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(dp(10), dp(10));
+        dl.rightMargin = dp(10);
+        st.addView(dot, dl);
+        statusText = text(14, TEXT, false);
+        st.addView(statusText, new LinearLayout.LayoutParams(0, -2, 1));
         root.addView(st, lp(-1, -2, 0, 12));
 
-        // ---- current turn (only while navigating)
+        // ---- while riding: the next turn and one big Stop button
         navPanel = new LinearLayout(this);
         navPanel.setOrientation(LinearLayout.VERTICAL);
         GradientDrawable ng = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{0xFF1F8A4C, 0xFF0F5132});
         ng.setCornerRadius(dp(18));
         navPanel.setBackground(ng);
-        navPanel.setPadding(dp(16), dp(14), dp(16), dp(14));
-        navBig = text(28, Color.WHITE, true);
-        navSmall = text(15, 0xFFD8F5E3, false);
-        navSmall.setLineSpacing(dp(2), 1f);
+        navPanel.setPadding(dp(18), dp(18), dp(18), dp(18));
+        navBig = text(34, Color.WHITE, true);
+        navSmall = text(16, 0xFFD8F5E3, false);
+        navSmall.setLineSpacing(dp(3), 1f);
         navPanel.addView(navBig);
-        navPanel.addView(navSmall, lp(-1, -2, 0, 4));
-        navPanel.setVisibility(View.GONE);
-        root.addView(navPanel, lp(-1, -2, 0, 10));
+        navPanel.addView(navSmall, lp(-1, -2, 0, 6));
+        TextView glassesNote = text(13, 0xFFA8E6C1, false);
+        glassesNote.setText(L.t("眼镜上同步显示转向", "Turns are shown on your glasses"));
+        navPanel.addView(glassesNote, lp(-1, -2, 0, 12));
+        root.addView(navPanel, lp(-1, -2, 0, 12));
+        stopBtn = button(L.t("结束导航", "Stop navigation"), 0, RED, RED, 56, v -> {
+            if (NavService.I != null) NavService.I.stopNav();
+        });
+        root.addView(stopBtn, lp(-1, -2, 0, 14));
+        View navSpace = new View(this);
+        navSpacer = navSpace;
+        root.addView(navSpace, lp(-1, 0, 1, 0));
 
-        // ---- search
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
+        // ---- not riding: search and places; tapping a place starts the ride
+        searchRow = new LinearLayout(this);
+        searchRow.setOrientation(LinearLayout.HORIZONTAL);
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
         GradientDrawable sg = shape(SURFACE, 16);
         sg.setStroke(dp(1), LINE);
-        row.setBackground(sg);
-        row.setPadding(dp(14), dp(4), dp(4), dp(4));
+        searchRow.setBackground(sg);
+        searchRow.setPadding(dp(14), dp(4), dp(4), dp(4));
         query = new EditText(this);
-        query.setHint(L.t("搜索目的地、地址或 纬度,经度", "Search a place, address or lat,lon"));
+        query.setHint(L.t("要去哪里？", "Where to?"));
         query.setSingleLine(true);
-        query.setTextSize(16);
+        query.setTextSize(17);
         query.setTextColor(TEXT);
         query.setHintTextColor(GREY);
         query.setBackground(null);
-        query.setPadding(0, dp(8), dp(8), dp(8));
+        query.setPadding(0, dp(10), dp(8), dp(10));
         query.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
         query.setOnEditorActionListener((v, id, ev) -> {
             if (id == EditorInfo.IME_ACTION_SEARCH
@@ -264,17 +275,15 @@ public class MainActivity extends Activity {
             }
             return false;
         });
-        row.addView(query, new LinearLayout.LayoutParams(0, -2, 1));
-        row.addView(button(L.t("搜索", "Search"), GREEN, ON_GREEN, 0, 40, v -> doSearch()));
-        root.addView(row, lp(-1, -2, 0, 12));
+        searchRow.addView(query, new LinearLayout.LayoutParams(0, -2, 1));
+        searchRow.addView(button(L.t("搜索", "Search"), GREEN, ON_GREEN, 0, 44, v -> doSearch()));
+        root.addView(searchRow, lp(-1, -2, 0, 12));
 
-        // ---- hint / planned route
         info = text(14, TEXT2, false);
         info.setLineSpacing(dp(2), 1f);
         info.setPadding(dp(4), 0, dp(4), 0);
         root.addView(info, lp(-1, -2, 0, 10));
 
-        // ---- results and recent places
         list = new ListView(this);
         list.setDivider(null);
         list.setSelector(new ColorDrawable(0));
@@ -304,44 +313,48 @@ public class MainActivity extends Activity {
         list.setOnItemClickListener((p, v, pos, id) -> pick(places.get(pos)));
         root.addView(list, lp(-1, 0, 1, 6));
 
-        // ---- actions
-        LinearLayout btns = new LinearLayout(this);
-        btns.setOrientation(LinearLayout.HORIZONTAL);
-        startBtn = button(L.t("开始导航", "Start"), GREEN, ON_GREEN, 0, 50, v -> start(false));
-        simBtn = button(L.t("模拟骑行", "Simulate"), 0, GREEN, GREEN, 50, v -> start(true));
-        stopBtn = button(L.t("结束导航", "Stop navigation"), 0, RED, RED, 50, v -> {
-            if (NavService.I != null) NavService.I.stopNav();
-        });
-        btns.addView(startBtn, new LinearLayout.LayoutParams(0, -2, 1.4f));
-        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(0, -2, 1);
-        sl.leftMargin = dp(10);
-        btns.addView(simBtn, sl);
-        btns.addView(stopBtn, new LinearLayout.LayoutParams(0, -2, 1));
-        root.addView(btns, lp(-1, -2, 0, 8));
-
-        // ---- options
+        // ---- settings (hidden until the Settings button is tapped)
+        settingsPanel = new LinearLayout(this);
+        settingsPanel.setOrientation(LinearLayout.VERTICAL);
+        settingsPanel.setBackground(shape(SURFACE, 18));
+        settingsPanel.setPadding(dp(16), dp(10), dp(16), dp(10));
+        LinearLayout langRow = new LinearLayout(this);
+        langRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView langLabel = text(15, TEXT, false);
+        langLabel.setText(L.t("语言", "Language"));
+        langRow.addView(langLabel, new LinearLayout.LayoutParams(0, -2, 1));
+        // Shows the language you would switch to.
+        langRow.addView(button(L.en ? "中文" : "English", 0, GREEN, LINE, 36, v -> {
+            String to = L.en ? "zh" : "en";
+            prefs.edit().putString("lang", to).apply();
+            L.apply(to);
+            if (NavService.I != null) NavService.I.setLang(to);
+            buildUi(); // same activity, new texts; navigation is kept
+        }));
+        settingsPanel.addView(langRow, lp(-1, -2, 0, 4));
         voice = option(L.t("语音播报", "Voice prompts"), prefs.getBoolean("voice", true), (c, on) -> {
             prefs.edit().putBoolean("voice", on).apply();
             if (NavService.I != null) NavService.I.setVoice(on);
         });
-        CheckBox onGlasses = option(L.t("语音在眼镜播放", "Voice on glasses"), prefs.getBoolean("voiceGlasses", true), (c, on) -> {
-            prefs.edit().putBoolean("voiceGlasses", on).apply();
-            if (NavService.I != null) NavService.I.setVoiceOnGlasses(on);
-        });
-        CheckBox eco = option(L.t("眼镜省电（路口前亮屏）", "Glasses power saving"), prefs.getBoolean("eco", false), (c, on) -> {
-            prefs.edit().putBoolean("eco", on).apply();
-            if (NavService.I != null) NavService.I.setEcoScreen(on);
-        });
-        LinearLayout o1 = new LinearLayout(this);
-        o1.addView(voice, new LinearLayout.LayoutParams(0, -2, 1));
-        o1.addView(onGlasses, new LinearLayout.LayoutParams(0, -2, 1));
-        root.addView(o1, lp(-1, -2, 0, 6));
-        LinearLayout o2 = new LinearLayout(this);
-        o2.setGravity(Gravity.CENTER_VERTICAL);
-        o2.addView(eco, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView quit = text(14, TEXT2, false);
-        quit.setText(L.t("退出", "Quit"));
-        quit.setPadding(dp(14), dp(8), dp(6), dp(8));
+        settingsPanel.addView(voice, lp(-1, -2, 0, 8));
+        settingsPanel.addView(option(L.t("语音在眼镜播放（关掉就用手机播放）", "Voice on the glasses (off: on the phone)"),
+                prefs.getBoolean("voiceGlasses", true), (c, on) -> {
+                    prefs.edit().putBoolean("voiceGlasses", on).apply();
+                    if (NavService.I != null) NavService.I.setVoiceOnGlasses(on);
+                }));
+        settingsPanel.addView(option(L.t("眼镜省电：离路口远时可以熄屏", "Glasses power saving: screen may sleep between turns"),
+                prefs.getBoolean("eco", false), (c, on) -> {
+                    prefs.edit().putBoolean("eco", on).apply();
+                    if (NavService.I != null) NavService.I.setEcoScreen(on);
+                }));
+        settingsPanel.addView(option(L.t("模拟模式：点地点后在眼镜上模拟骑一遍（在家预览用）",
+                "Simulation: tapping a place plays the ride on the glasses (to preview at home)"), simMode, (c, on) -> {
+            simMode = on;
+            setButtons();
+        }));
+        TextView quit = text(15, RED, false);
+        quit.setText(L.t("退出骑行导航", "Quit"));
+        quit.setPadding(0, dp(14), 0, dp(10));
         quit.setOnClickListener(v -> {
             if (NavService.I != null) NavService.I.stopNav();
             ui.postDelayed(() -> {
@@ -349,13 +362,21 @@ public class MainActivity extends Activity {
                 finishAndRemoveTask();
             }, 300);
         });
-        o2.addView(quit);
-        root.addView(o2, new LinearLayout.LayoutParams(-1, -2));
+        settingsPanel.addView(quit);
+        TextView credit = text(11, GREY, false);
+        credit.setText(L.t("完全免费，不需要账号或密钥。\n地图数据 © OpenStreetMap 贡献者 · 路线 OSRM（FOSSGIS）· 搜索 Photon / Nominatim",
+                "Free, no account or API key.\nMap data © OpenStreetMap contributors · Routing: OSRM (FOSSGIS) · Search: Photon / Nominatim"));
+        settingsPanel.addView(credit, lp(-1, -2, 0, 4));
+        root.addView(settingsPanel, lp(-1, -2, 0, 12));
+        View setSpace = new View(this);
+        settingsSpacer = setSpace;
+        root.addView(setSpace, lp(-1, 0, 1, 0));
 
-        TextView credit = text(10, GREY, false);
-        credit.setText(L.t("地图数据 © OpenStreetMap 贡献者 · 路线 OSRM（FOSSGIS）· 搜索 Photon / Nominatim",
-                "Map data © OpenStreetMap contributors · Routing: OSRM (FOSSGIS) · Search: Photon / Nominatim"));
-        root.addView(credit, lp(-1, -2, 0, 2));
+        // OpenStreetMap asks for visible credit; one quiet line under everything.
+        TextView osm = text(10, GREY, false);
+        osm.setText("© OpenStreetMap");
+        osm.setGravity(Gravity.CENTER);
+        root.addView(osm, lp(-1, -2, 0, 4));
 
         setContentView(root);
         showRecents();
@@ -411,49 +432,43 @@ public class MainActivity extends Activity {
         return wrap;
     }
 
+    /** Three screens, one at a time: settings, the ride, or search and places. */
     private void setButtons() {
         NavService s = NavService.I;
         boolean nav = s != null && s.navigating;
-        startBtn.setVisibility(nav ? View.GONE : View.VISIBLE);
-        simBtn.setVisibility(nav ? View.GONE : View.VISIBLE);
-        stopBtn.setVisibility(nav ? View.VISIBLE : View.GONE);
-        enable(startBtn, pending != null);
-        enable(simBtn, pending != null);
+        boolean set = settingsOpen;
+        settingsPanel.setVisibility(set ? View.VISIBLE : View.GONE);
+        settingsSpacer.setVisibility(set ? View.VISIBLE : View.GONE);
+        boolean ride = nav && !set;
+        navPanel.setVisibility(ride ? View.VISIBLE : View.GONE);
+        stopBtn.setVisibility(ride ? View.VISIBLE : View.GONE);
+        navSpacer.setVisibility(ride ? View.VISIBLE : View.GONE);
+        boolean find = !nav && !set;
+        searchRow.setVisibility(find ? View.VISIBLE : View.GONE);
+        info.setVisibility(find ? View.VISIBLE : View.GONE);
+        list.setVisibility(find ? View.VISIBLE : View.GONE);
     }
 
     private void refreshStatus() {
         NavService s = NavService.I;
         if (s == null) {
-            gpsDot.setColor(GREY);
-            glDot.setColor(GREY);
-            gpsText.setText(serviceStarted ? L.t("正在启动…", "Starting…")
+            statusDot.setColor(GREY);
+            statusText.setText(serviceStarted ? L.t("正在启动…", "Starting…")
                     : L.t("需要定位权限才能导航，请在弹窗中允许", "Location permission is needed. Please allow it in the prompt."));
-            glText.setText("—");
-            navPanel.setVisibility(View.GONE);
             return;
         }
-        Location l = s.last;
-        if (s.gpsGood() && l != null) {
-            gpsDot.setColor(GREEN);
-            gpsText.setText(L.t("已定位 · 精度约 ", "Fixed · accuracy about ") + Math.round(l.getAccuracy()) + L.t(" 米", " m")
-                    + (l.hasSpeed() ? " · " + Math.round(l.getSpeed() * 3.6) + " km/h" : ""));
-        } else {
-            gpsDot.setColor(AMBER);
-            gpsText.setText(l != null ? L.t("正在定位…只有大致位置，到室外会更准", "Locating… rough position only; go outdoors for a better fix")
-                    : L.t("正在定位…请到室外开阔处", "Locating… please go outdoors"));
-        }
         int w = s.link.count("wifi"), bt = s.link.count("bt");
-        if (w + bt == 0) {
-            glDot.setColor(GREY);
-            glText.setText(L.t("未连接 · 打开蓝牙，或让眼镜连上手机热点", "Not connected · turn on Bluetooth, or join the phone's hotspot from the glasses")
-                    + (s.link.btError.isEmpty() ? "" : L.t("\n蓝牙：", "\nBluetooth: ") + s.link.btError));
-        } else {
-            glDot.setColor(GREEN);
-            glText.setText(L.t("已连接", "Connected") + (w > 0 ? L.t(" · 热点/WiFi", " · hotspot/Wi-Fi") : "")
-                    + (bt > 0 ? L.t(" · 蓝牙", " · Bluetooth") : ""));
-        }
+        boolean glasses = w + bt > 0;
+        Location l = s.last;
+        boolean gps = s.gpsGood() && l != null;
+        String g = glasses ? L.t("眼镜已连接", "Glasses connected")
+                : L.t("眼镜未连接 · 打开手机蓝牙即可", "Glasses not connected · turn on Bluetooth");
+        if (!glasses && !s.link.btError.isEmpty()) g += L.t("（蓝牙：", " (Bluetooth: ") + s.link.btError + L.t("）", ")");
+        String p = gps ? L.t("GPS ", "GPS ") + Math.round(l.getAccuracy()) + L.t(" 米", " m")
+                : L.t("GPS 定位中…", "GPS locating…");
+        statusText.setText(g + "  ·  " + p + (simMode ? L.t("  ·  模拟模式", "  ·  simulation") : ""));
+        statusDot.setColor(glasses && gps ? GREEN : glasses || gps ? AMBER : GREY);
         if (s.navigating && s.route != null) {
-            navPanel.setVisibility(View.VISIBLE);
             navBig.setText(s.arrived ? L.t("已到达目的地", "You have arrived") : Geo.fmtDist(s.uiMdist) + "  " + s.uiAction);
             String road = s.uiRoad;
             String msg = s.uiMsg;
@@ -462,8 +477,6 @@ public class MainActivity extends Activity {
                     + new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(s.uiEta)) + L.t(" 到达", "")
                     + (s.simulating ? L.t(" · 模拟中", " · simulating") : "")
                     + (TextUtils.isEmpty(msg) ? "" : "\n" + msg));
-        } else {
-            navPanel.setVisibility(View.GONE);
         }
     }
 
@@ -476,6 +489,9 @@ public class MainActivity extends Activity {
                 adapter.notifyDataSetChanged();
             }
             refreshStatus();
+            boolean nav = NavService.I != null && NavService.I.navigating;
+            if (wasNav && !nav && query.getText().toString().trim().isEmpty()) showRecents(); // back from a ride
+            wasNav = nav;
             setButtons();
             maybeRunTest();
             ui.postDelayed(this, 1000);
@@ -559,7 +575,7 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     showPlaces(r, near);
                     info.setText(r.isEmpty() ? L.t("没有找到，换个说法试试（英文地名更容易搜到）", "Nothing found. Try different words.")
-                            : L.t("点一个结果来规划骑行路线", "Tap a result to plan a cycling route"));
+                            : L.t("点一个地点就出发，眼镜会同步显示", "Tap a place to go; your glasses follow along"));
                 });
             } catch (Exception e) {
                 ui.post(() -> info.setText(L.t("搜索失败：请检查手机网络（", "Search failed. Check the network (") + why(e) + L.t("）", ")")));
@@ -615,9 +631,9 @@ public class MainActivity extends Activity {
         showPlaces(r, s == null ? null : s.last);
         if (info == null) return;
         if (resume != null) info.setText(L.t("上次导航没有结束。点第一行“继续上次导航”可以接着骑", "The last ride did not finish. Tap the first row to continue it."));
-        else if (r.isEmpty()) info.setText(L.t("输入目的地后点“搜索”。点地点右边的 ☆ 可以收藏为常去地点", "Type a destination and tap Search. Tap ☆ next to a place to save it."));
-        else if (favs.isEmpty()) info.setText(L.t("最近去过的地方 · 点 ☆ 收藏为常去地点", "Recent places · tap ☆ to save a place"));
-        else info.setText(L.t("★ 常去地点在最上面 · 点一下规划路线", "★ Saved places are on top · tap one to plan a route"));
+        else if (r.isEmpty()) info.setText(L.t("输入要去的地方，点“搜索”", "Type where you want to go and tap Search"));
+        else if (favs.isEmpty()) info.setText(L.t("点一个地点就出发 · 点 ☆ 收藏为常去地点", "Tap a place to go · tap ☆ to save it"));
+        else info.setText(L.t("点一个地点就出发 · 点 ★ 删除常去地点", "Tap a place to go · tap ★ to remove a saved place"));
     }
 
     /**
@@ -695,18 +711,18 @@ public class MainActivity extends Activity {
                     "The current position is old or too rough. Wait outdoors for a GPS fix and try again."), Toast.LENGTH_LONG).show();
             return;
         }
-        info.setText(L.t("正在规划骑行路线：", "Planning a cycling route to ") + p.name + " …");
+        info.setText(L.t("正在规划去 ", "Planning a route to ") + p.name + L.t(" 的骑行路线…", " …"));
         pending = null;
         setButtons();
         bg.execute(() -> {
             try {
                 Route r = Router.fetch(l.getLatitude(), l.getLongitude(), p.lat, p.lon, p.name);
-                ui.post(() -> showPlanned(r, p, ""));
+                ui.post(() -> go(r, p, ""));
             } catch (Exception e) {
                 // No network: an unfinished ride can still go on with the route saved when it started.
                 Route saved = p.resume ? NavService.loadSavedRoute(this, p.name, p.lat, p.lon) : null;
                 if (saved != null) {
-                    ui.post(() -> showPlanned(saved, p, L.t("\n没有网络：使用上次保存的路线。骑错路时要有网才能重新规划",
+                    ui.post(() -> go(saved, p, L.t("\n没有网络：使用上次保存的路线。骑错路时要有网才能重新规划",
                             "\nNo network: using the saved route. Rerouting needs a connection.")));
                 } else {
                     ui.post(() -> info.setText(L.t("路线规划失败：请检查手机网络（", "Routing failed. Check the network (") + why(e) + L.t("）", ")")));
@@ -715,19 +731,17 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void showPlanned(Route r, Search.Place p, String note) {
+    /** Starts the ride as soon as a route is in; the glasses pick it up at once. */
+    private void go(Route r, Search.Place p, String note) {
         pending = r;
         pendingPlace = p;
+        start(simMode);
+        info.setText("");
         String warn = "car".equals(r.profile)
-                ? L.t("\n⚠ 骑行路线服务暂时不可用，这是驾车路线，可能经过禁止自行车的道路（如高速）",
-                "\n⚠ The cycling route service is unavailable. This is a driving route and may use roads closed to bicycles.") : "";
-        long mins = Math.max(1, Math.round(r.totalDur / 60));
-        info.setText(L.en
-                ? Router.profileName(r.profile) + " route: " + Geo.fmtDist(r.totalDist) + ", about " + mins + " min → " + p.name
-                + warn + note + "\nTap Start to go, or Simulate to preview it on the glasses"
-                : Router.profileName(r.profile) + "路线：全程 " + Geo.fmtDist(r.totalDist) + "，约 " + mins + " 分钟 → " + p.name
-                + warn + note + "\n点“开始导航”出发，或“模拟骑行”先在眼镜上预览");
-        setButtons();
+                ? L.t("骑行路线服务暂时不可用，这是驾车路线，可能经过禁止自行车的道路（如高速）",
+                "The cycling route service is unavailable. This is a driving route and may use roads closed to bicycles.") : "";
+        String msg = (warn + note).trim();
+        if (!msg.isEmpty()) Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
     }
 
     private void start(boolean sim) {
