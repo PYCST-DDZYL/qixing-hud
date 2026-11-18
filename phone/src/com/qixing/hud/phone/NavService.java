@@ -26,9 +26,7 @@ import com.qixing.hud.common.L;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.HashSet;
 import java.util.Locale;
-import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -66,7 +64,7 @@ public class NavService extends Service {
     private int awayCount; // fixes in a row moving away from the route
     private long lastRerouteAt;
     private long arrivedAt;
-    private final Set<String> spoken = new HashSet<>();
+    private final Prompts prompts = new Prompts();
     private double simAlong;
     volatile double simSpeed = 5.0; // m/s; the adb test hook may raise it
     private int simTicks;
@@ -229,7 +227,7 @@ public class NavService extends Service {
             rerouteFailSpoken = false;
             msgUntil = 0;
             notifTitle = null;
-            spoken.clear();
+            prompts.clear();
             uiMsg = "";
             sendRoute(r);
             if (!sim) saveResume(r);
@@ -475,34 +473,10 @@ public class NavService extends Service {
             mdist = 0;
         }
 
-        // Voice prompts.
+        // Voice prompts (see Prompts).
         if (fresh && next != null && !arrived) {
-            String key = r.id + ":" + nextIdx;
-            String say = act + ("arrive".equals(next.type) ? "" : (road.isEmpty() ? "" : L.t("，", " ") + road));
-            // A second turn right after this one would otherwise be announced too late to act on
-            // ("前方10米…"): mention it now, the way car navigation says "随后右转".
-            String then = "";
-            int afterIdx = -1;
-            for (int i = nextIdx + 1; i < r.steps.size(); i++) {
-                Route.Step s = r.steps.get(i);
-                if (s.silent && !"arrive".equals(s.type)) continue;
-                if (s.along - next.along < 50) {
-                    afterIdx = i;
-                    then = L.t("，随后", ", then ") + lc(Instr.action(s));
-                }
-                break;
-            }
-            if (mdist <= 260 && mdist > 90 && spoken.add(key + ":far")) {
-                speak(ahead(mdist) + lc(say) + then);
-            } else if (mdist <= 60 && mdist > 8 && spoken.add(key + ":near")) {
-                spoken.add(key + ":far");
-                speak(ahead(mdist) + lc(act) + then);
-            }
-            if (afterIdx >= 0 && spoken.contains(key + ":near")) {
-                // Already announced as "随后…": no separate, too-late prompt for it.
-                spoken.add(r.id + ":" + afterIdx + ":far");
-                spoken.add(r.id + ":" + afterIdx + ":near");
-            }
+            String text = prompts.next(r, nextIdx, mdist, spd, ageSec(loc));
+            if (text != null) speak(text);
         }
 
         // ETA: blend measured speed with the router's estimate.
@@ -858,26 +832,9 @@ public class NavService extends Service {
         return L.t("眼镜可通过热点或蓝牙连接", "Glasses connect by hotspot or Bluetooth");
     }
 
-    /** "前方250米，" / "In 250 meters, ". */
-    private static String ahead(double m) {
-        return L.en ? "In " + roundSay(m) + ", " : "前方" + roundSay(m) + "，";
-    }
-
     /** Spoken total distance. */
     private static String sayDist(double m) {
         return m >= 1000 ? String.format(Locale.US, "%.1f kilometers", m / 1000) : Math.round(m / 10.0) * 10 + " meters";
-    }
-
-    /** English reads better mid-sentence in lower case ("In 50 meters, turn left"). */
-    private static String lc(String s) {
-        if (!L.en || s.isEmpty()) return s;
-        return Character.toLowerCase(s.charAt(0)) + s.substring(1);
-    }
-
-    private static String roundSay(double m) {
-        if (m >= 1000) return String.format(Locale.US, "%.1f", m / 1000) + L.t("公里", " kilometers");
-        long v = m >= 100 ? Math.round(m / 50.0) * 50 : Math.max(10, Math.round(m / 10.0) * 10);
-        return v + L.t("米", " meters");
     }
 
     private static double round1(double v) {
