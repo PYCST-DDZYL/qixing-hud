@@ -12,7 +12,9 @@ Free turn-by-turn cycling navigation for **Rokid AR glasses**. Your Android phon
 
 ## What it does
 
-- Bicycle routing with automatic rerouting when you leave the route.
+- Bicycle routing. A wrong turn is caught in about 5 seconds and the route is recalculated.
+- On the glasses your position sits on the route line, the arrow follows the road, and the distance to the turn counts down smoothly (no jumping at red lights).
+- Voice prompts allow for GPS and playback delay, so "In 50 meters" really means 50 meters when you hear it.
 - Voice prompts in English or Chinese:
   - Played on the glasses' speaker by default, so you hear them with the phone in a pocket.
   - Two turns close together are announced together: "In 50 meters, turn left, then turn right".
@@ -35,7 +37,7 @@ English voice uses the phone's own text-to-speech engine. If no English voice is
 
 ## Requirements
 
-- Phone: Android 9 or later, with GPS.
+- Phone: Android 9 or later, with GPS. Tested on a Samsung Galaxy S24+ (Android 17).
 - Glasses: Rokid glasses running Android 12 (developed on the RV101, 480×640 monochrome green). Other Android-based glasses that can install APKs may work but are untested.
 
 ## Install
