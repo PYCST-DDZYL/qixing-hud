@@ -47,20 +47,35 @@ final class Route {
     /** Within this many metres of the route counts as back on it. */
     static final double REJOIN = 30;
 
+    /** A part of the route pointing this many degrees away from the direction of travel... */
+    static final double WRONG_WAY = 110;
+    /** ...counts as this many metres further away than it is. */
+    static final double WRONG_WAY_COST = 25;
+
     /** Projects a point onto the route. hint < 0 searches the whole route. */
     Match project(double la, double lo, int hint) {
+        return project(la, lo, hint, Double.NaN);
+    }
+
+    /**
+     * heading: the GPS direction of travel in degrees, NaN when unknown (slow or no bearing).
+     * Where two parts of the route run close together in opposite directions (a U-shaped street,
+     * an out-and-back), GPS noise could put the rider on the other part, 50-100 m further along or
+     * back. Car navigation uses the heading to tell them apart; so does this.
+     */
+    Match project(double la, double lo, int hint, double heading) {
         if (hint < 0) {
             // First fix: on a round trip the start and the end are both nearby. Take the earliest
             // part of the route that is about as close as the best match, not the end of it.
-            return projectRange(la, lo, 0, size() - 1, 15);
+            return projectRange(la, lo, 0, size() - 1, 15, Double.NaN);
         }
-        Match m = projectRange(la, lo, Math.max(0, hint - 15), Math.min(size() - 1, hint + 400), 0);
+        Match m = projectRange(la, lo, Math.max(0, hint - 15), Math.min(size() - 1, hint + 400), 0, heading);
         if (m.off > REJOIN) {
             // Not on the stretch we expected: the rider may have come back to the route somewhere
             // else (a shortcut, a detour that rejoins further on, or turning back). Look at the
             // whole route, and move there only when the rider is clearly on it: on a loop another
             // leg can pass close by, and a rider who is simply off route must not jump onto it.
-            Match g = projectRange(la, lo, 0, size() - 1, 0);
+            Match g = projectRange(la, lo, 0, size() - 1, 0, heading);
             if (g.off <= REJOIN && g.off < m.off - 10) m = g;
             else if (m.off > 80 && g.off < m.off) m = g;
         }
@@ -68,9 +83,10 @@ final class Route {
     }
 
     /** slack > 0: return the earliest segment within slack metres of the closest one. */
-    private Match projectRange(double la, double lo, int from, int to, double slack) {
+    private Match projectRange(double la, double lo, int from, int to, double slack, double heading) {
         Match best = new Match();
         best.off = Double.MAX_VALUE;
+        double bestCost = Double.MAX_VALUE;
         if (size() < 2) {
             best.off = size() == 1 ? Geo.dist(la, lo, lat[0], lon[0]) : Double.MAX_VALUE;
             return best;
@@ -89,7 +105,14 @@ final class Route {
             double qx = a[0] + t * dx, qy = a[1] + t * dy;
             off[i - from] = Math.sqrt(qx * qx + qy * qy);
             along[i - from] = cum[i] + t * (cum[i + 1] - cum[i]);
-            if (off[i - from] < best.off) {
+            double cost = off[i - from];
+            if (!Double.isNaN(heading) && len2 > 1e-9) {
+                double segBrg = Math.toDegrees(Math.atan2(dx, dy));
+                double d = Math.abs(((segBrg - heading) % 360 + 360) % 360);
+                if (Math.min(d, 360 - d) > WRONG_WAY) cost += WRONG_WAY_COST;
+            }
+            if (cost < bestCost) {
+                bestCost = cost;
                 best.off = off[i - from];
                 best.seg = i;
                 best.along = along[i - from];

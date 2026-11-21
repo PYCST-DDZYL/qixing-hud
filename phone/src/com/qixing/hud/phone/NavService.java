@@ -395,7 +395,9 @@ public class NavService extends Service {
         if (!fresh) spd = 0; // stale fix: we do not know that we are moving
         else speedAvg = speedAvg * 0.9 + spd * 0.1;
 
-        Route.Match m = r.project(la, lo, hintSeg);
+        // The direction of travel picks the right part of the route where two run close together.
+        Route.Match m = r.project(la, lo, hintSeg,
+                fresh && spd > 2 && loc.hasBearing() ? loc.getBearing() : Double.NaN);
         hintSeg = m.seg;
         // Shown position: on the route line, with a smoothed distance along it (see Tracker).
         tracker.update(r, m, la, lo, spd, loc.hasBearing() ? loc.getBearing() : Double.NaN,
